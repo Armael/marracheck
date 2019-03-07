@@ -24,6 +24,7 @@ let run () =
   OpamClientConfig.opam_init
     (* ~solver:(lazy (module OpamBuiltinZ3)) *)
     (* ~solver:(lazy (module OpamCudfSolver.Aspcud)) *)
+    ~solver:(lazy (module OpamZ3))
     ~best_effort:true
     ();
   let gs = OpamGlobalState.load `Lock_read in

@@ -21,15 +21,18 @@ let is_present () = true
 let command_name = None
 
 let default_criteria = {
-  crit_default = "-removed,\
-                  -count[version-lag,request],\
-                  -count[version-lag,changed],\
-                  -changed";
+  (* crit_default = "-removed,\
+   *                 -count[version-lag,request],\
+   *                 -count[version-lag,changed],\
+   *                 -changed"; *)
+  crit_default = "-count[version-lag,request],\
+                  -count[version-lag,changed]";
   crit_upgrade = "-removed,\
                   -count[version-lag,solution],\
                   -new";
   crit_fixup = "-changed,-count[version-lag,solution]";
-  crit_best_effort_prefix = Some "+count[opam-query,solution],";
+  (* crit_best_effort_prefix = Some "+count[opam-query,solution],"; *)
+  crit_best_effort_prefix = None;
 }
 
 let mk_or ctx = function
@@ -364,20 +367,48 @@ module Syntax = struct
 end
 
 
-let call ~criteria ?timeout (preamble, universe, _ as cudf) =
-  (* try *)
-  log "Generating problem...";
-  let cfg = match timeout with
-    | None -> []
-    | Some secs -> ["timeout", string_of_int (int_of_float (1000. *. secs))]
+let cc : (Z3.context *
+          Z3.Optimize.optimize *
+          (Cudf.package -> Z3.Expr.expr option)
+         ) option ref =
+  ref None
+
+let call ~criteria ?timeout (preamble, universe, request as cudf) =
+  let (ctx, opt, psym) =
+    match !cc with
+    | Some p -> p
+    | None ->
+      (* try *)
+      log "Generating problem...";
+      let cfg = match timeout with
+        | None -> []
+        | Some secs -> ["timeout", string_of_int (int_of_float (1000. *. secs))]
+      in
+      let ctx = Z3.mk_context cfg in
+      let opt = Z3.Optimize.mk_opt ctx in
+      log "Generating package definitions";
+      let expr, psym = def_packages ctx cudf in
+      Z3.Optimize.add opt expr;
+      let st = (ctx, opt, psym) in
+      cc := Some st; st
   in
-  let ctx = Z3.mk_context cfg in
-  let opt = Z3.Optimize.mk_opt ctx in
-  log "Generating package definitions";
-  let expr, psym = def_packages ctx cudf in
-  Z3.Optimize.add opt expr;
+  Z3.Optimize.push opt;
   log "Generating request";
-  Z3.Optimize.add opt (def_request ctx cudf psym);
+  (* Z3.Optimize.add opt (def_request ctx cudf psym); *)
+  let expand_constraint (name, constr) =
+    mk_or ctx @@ xrmap psym
+      (Cudf.lookup_packages universe ~filter:constr name)
+  in
+  let value_of x =
+    Z3.Boolean.mk_ite ctx x
+      (Z3.Arithmetic.Integer.mk_numeral_i ctx 1)
+      (Z3.Arithmetic.Integer.mk_numeral_i ctx 0)
+  in
+  let _handle =
+    xrmap expand_constraint request.Cudf.install >>| fun to_install ->
+    Z3.Optimize.maximize opt
+      (Z3.Arithmetic.mk_add ctx (List.map value_of to_install))
+  in
   log "Generating optimization criteria";
   let _objs =
     def_criteria ctx opt cudf psym (Syntax.criteria_of_string criteria)
@@ -392,9 +423,11 @@ let call ~criteria ?timeout (preamble, universe, _ as cudf) =
   match Z3.Optimize.check opt with
   | UNSATISFIABLE ->
     log "UNSAT";
+    Z3.Optimize.pop opt;
     raise Common.CudfSolver.Unsat
   | UNKNOWN ->
     log "UNKNOWN";
+    Z3.Optimize.pop opt;
     raise Timeout
   | SATISFIABLE ->
     log "SAT: extracting model";
@@ -417,6 +450,7 @@ let call ~criteria ?timeout (preamble, universe, _ as cudf) =
                :: pkgs)
           | _ -> pkgs)
         [] |>
+      (fun x -> Z3.Optimize.pop opt; x) |>
       Cudf.load_universe |>
       fun u -> Some preamble, u
     | None -> failwith "no model ??"
