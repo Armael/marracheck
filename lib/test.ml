@@ -25,7 +25,7 @@ let run () =
     (* ~solver:(lazy (module OpamBuiltinZ3)) *)
     (* ~solver:(lazy (module OpamCudfSolver.Aspcud)) *)
     ~solver:(lazy (module OpamZ3))
-    ~best_effort:true
+    (* ~best_effort:true *)
     ();
   let gs = OpamGlobalState.load `Lock_read in
   OpamSwitchState.with_ `Lock_read gs (fun switch ->
@@ -48,10 +48,11 @@ let run () =
     Printf.eprintf "all packages: %d\n%!"
       OpamPackage.(Name.Set.cardinal (names_of_packages all_packages));
 
-    let u0 = { u with u_attrs = ["opam-query", all_packages_last_version] } in
-    (* best-effort removes the install/upgrade request info *)
-    let req = OpamSolver.request () in
-    let res = OpamSolver.resolve u0 ~orphans:OpamPackage.Set.empty req in
+    let req = OpamSolver.request
+        ~install:(OpamSolution.eq_atoms_of_packages all_packages_last_version)
+        ()
+    in
+    let res = OpamSolver.resolve u ~orphans:OpamPackage.Set.empty req in
     match res with
     | Success solution ->
       Printf.eprintf "%s\n" (OpamSolver.(string_of_stats (stats solution)))
