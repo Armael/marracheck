@@ -1,25 +1,3 @@
-(*
- - OpamGlobalState
- - OpamSwitchState
- - universe
- - OpamSolver
- - request
- - resolve
- - atomic_actions
-
-  best_effort:
-  OpamSolver.request vide le wish install
-  requested : on met ce qu'on veut installer
-
-
-  simuler best effort:
-
-  univers + patcher le champ u_attrs avec "opam-query" + liste des paquets à installer en best-effort
-    dans la requête, ajouter le critère "+count[opam-query:,false]"
-    en le settant avec OpamSolverConfig
-
-*)
-
 let get_universe switch =
   let u = OpamSwitchState.universe switch
       ~requested:OpamPackage.Name.Set.empty
