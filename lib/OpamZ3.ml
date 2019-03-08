@@ -25,8 +25,7 @@ let default_criteria = {
    *                 -count[version-lag,request],\
    *                 -count[version-lag,changed],\
    *                 -changed"; *)
-  crit_default = "-count[version-lag,changed]";
-                  (* "-new"; *)
+  crit_default = "-count[version-lag,changed],-new";
   crit_upgrade = "-removed,\
                   -count[version-lag,solution],\
                   -new";
@@ -373,7 +372,12 @@ let cc : (Z3.context *
          ) option ref =
   ref None
 
-let call ~criteria ?timeout (preamble, universe, request as cudf) =
+let value_of ctx x =
+  Z3.Boolean.mk_ite ctx x
+    (Z3.Arithmetic.Integer.mk_numeral_i ctx 1)
+    (Z3.Arithmetic.Integer.mk_numeral_i ctx 0)
+
+let call1 ~criteria ?timeout (preamble, universe, request as cudf) =
   let (ctx, opt, psym) =
     match !cc with
     | Some p -> p
@@ -399,15 +403,10 @@ let call ~criteria ?timeout (preamble, universe, request as cudf) =
     mk_or ctx @@ xrmap psym
       (Cudf.lookup_packages universe ~filter:constr name)
   in
-  let value_of x =
-    Z3.Boolean.mk_ite ctx x
-      (Z3.Arithmetic.Integer.mk_numeral_i ctx 1)
-      (Z3.Arithmetic.Integer.mk_numeral_i ctx 0)
-  in
   let _handle =
     xrmap expand_constraint request.Cudf.install >>| fun to_install ->
     Z3.Optimize.maximize opt
-      (Z3.Arithmetic.mk_add ctx (List.map value_of to_install))
+      (Z3.Arithmetic.mk_add ctx (List.map (value_of ctx) to_install))
   in
   log "Generating optimization criteria";
   let _objs =
@@ -451,6 +450,119 @@ let call ~criteria ?timeout (preamble, universe, request as cudf) =
           | _ -> pkgs)
         [] |>
       (fun x -> Z3.Optimize.pop opt; x) |>
+      Cudf.load_universe |>
+      fun u -> Some preamble, u
+    | None -> failwith "no model ??"
+  (* with
+   * | (Timeout | Common.CudfSolver.Unsat | Failure _) as e -> raise e
+   * | e ->
+   *   OpamConsole.error "Z3 error: %s" (Printexc.to_string e);
+   *   OpamConsole.errmsg "%s" (Printexc.get_backtrace ());
+   *   raise e *)
+
+let call ~criteria ?timeout (preamble, universe, request as cudf) =
+  let (ctx, opt, psym) =
+    match !cc with
+    | Some p -> p
+    | None ->
+      (* try *)
+      log "Generating problem...";
+      let cfg = match timeout with
+        | None -> []
+        | Some secs -> ["timeout", string_of_int (int_of_float (1000. *. secs))]
+      in
+      let ctx = Z3.mk_context cfg in
+      let opt = Z3.Optimize.mk_opt ctx in
+      log "Generating package definitions";
+      let expr, psym = def_packages ctx cudf in
+      Z3.Optimize.add opt expr;
+      let st = (ctx, opt, psym) in
+      cc := Some st; st
+  in
+  let stack_depth = ref 0 in
+  let push1 () = Z3.Optimize.push opt; incr stack_depth in
+  let _pop1 () = Z3.Optimize.pop opt; decr stack_depth in
+  let pop_all () =
+    for _i = 1 to !stack_depth do
+      Z3.Optimize.pop opt
+    done
+  in
+  push1 ();
+  log "Generating request";
+  (* Z3.Optimize.add opt (def_request ctx cudf psym); *)
+  let expand_constraint (name, constr) =
+    mk_or ctx @@ xrmap psym
+      (Cudf.lookup_packages universe ~filter:constr name)
+  in
+  let batch_size = 100 in
+  let _ =
+    xrmap expand_constraint request.Cudf.install >>| fun to_install ->
+    List.mapi CCPair.make to_install
+    |> CCList.group_succ ~eq:(fun (i,_) (j,_) -> i / batch_size = j / batch_size)
+    |> List.iter (fun batch ->
+      let batch = List.map snd batch in
+      log "Trying to install %s...%!"
+        ((List.map Z3.Expr.to_string batch) |> String.concat " ");
+      push1 ();
+      (* Z3.Optimize.add opt batch; *)
+      let _handle =
+        Z3.Optimize.maximize opt
+          (Z3.Arithmetic.mk_add ctx (List.map (value_of ctx) batch))
+      in
+      (* match Z3.Optimize.check opt with
+       * | UNSATISFIABLE ->
+       *   log "UNSAT";
+       *   pop1();
+       * | SATISFIABLE ->
+       *   log "SAT"
+       * | UNKNOWN ->
+       *   log "UNK";
+       *   pop1 () *)
+      ()
+    )
+  in
+  log "Generating optimization criteria";
+  let _objs =
+    def_criteria ctx opt cudf psym (Syntax.criteria_of_string criteria)
+  in
+  (match OpamStd.Env.getopt "Z3DEBUG" with
+   | None -> ()
+   | Some f ->
+     let debug = open_out (f^".smt2") in
+     output_string debug (Z3.Optimize.to_string opt);
+     close_out debug);
+  log "Resolving";
+  match Z3.Optimize.check opt with
+  | UNSATISFIABLE ->
+    log "UNSAT";
+    pop_all ();
+    raise Common.CudfSolver.Unsat
+  | UNKNOWN ->
+    log "UNKNOWN";
+    pop_all ();
+    raise Timeout
+  | SATISFIABLE ->
+    log "SAT: extracting model";
+    match Z3.Optimize.get_model opt with
+    | Some model ->
+      Z3.Model.get_const_decls model |>
+      List.fold_left (fun pkgs decl ->
+          match Z3.Model.get_const_interp model decl with
+          | Some p when Z3.Boolean.is_true p ->
+            (match OpamStd.String.cut_at
+                     (Z3.Symbol.get_string (Z3.FuncDecl.get_name decl))
+                     '.'
+             with
+             | None -> pkgs
+             | Some (p, v) ->
+               let p = Cudf.lookup_package universe (p, int_of_string v) in
+               {p with
+                Cudf.was_installed = p.installed;
+                Cudf.installed = true}
+               :: pkgs)
+          | _ -> pkgs)
+        [] |>
+      (fun x -> pop_all (); x) |>
       Cudf.load_universe |>
       fun u -> Some preamble, u
     | None -> failwith "no model ??"

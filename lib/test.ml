@@ -33,17 +33,16 @@ let rec cover ~slice_size u acc acc_uninst to_install =
   | Ok installable ->
     let useful = OpamPackage.Set.inter slice_s installable in
     let useful_nb = card useful in
-    Printf.printf "(%d|%d|%d)\n%!"
-      useful_nb
-      (card installable)
-      (List.length
-         (List.filter (fun pkg -> OpamPackage.Set.mem pkg installable)
-            to_install_rest))
-    ;
+    let useful_for_later =
+      List.filter (fun pkg -> OpamPackage.Set.mem pkg installable)
+        to_install_rest in
+    Printf.printf "(%d|%d|%d) %d\n%!"
+      useful_nb (card installable) (List.length useful_for_later)
+      (List.fold_left (+) 0 @@ List.map snd acc);
     let acc', acc_uninst', to_install_rest' =
       if useful_nb = 0 then acc, slice_s :: acc_uninst, to_install_rest
       else
-        let acc' = installable :: acc in
+        let acc' = (installable, card useful + List.length useful_for_later) :: acc in
         let slice_rest =
           OpamPackage.Set.diff slice_s useful
           |> OpamPackage.Set.to_seq
@@ -102,7 +101,7 @@ let run () =
 
     let vw = version_weights all_packages in
     let all_packages_list =
-      OpamPackage.Set.to_seq all_packages_last_version
+      OpamPackage.Set.to_seq all_packages
       |> OSeq.to_list
       |> List.stable_sort (fun p1 p2 ->
         Float.compare (OpamPackage.Map.find p2 vw) (OpamPackage.Map.find p1 vw))
@@ -113,7 +112,9 @@ let run () =
         u [] [] all_packages_list
     in
     Printf.printf "\n";
-    List.iter (fun s -> Printf.printf "%d " (OpamPackage.Set.cardinal s)) sets;
+    List.iter (fun (s, su) -> Printf.printf "(%d|%d) "
+                  (OpamPackage.Set.cardinal s) su
+              ) sets;
     Printf.printf "\nuninstallable:\n";
     List.iter (fun s -> Printf.printf "%d " (OpamPackage.Set.cardinal s)) uninst;
     Printf.printf "\n"
