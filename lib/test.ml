@@ -25,10 +25,10 @@ let t0 = Unix.gettimeofday ()
 
 let rec cover ~slice_size u acc acc_uninst to_install =
   let slice, to_install_rest = CCList.take_drop slice_size to_install in
+  Printf.printf "%.2f: <slice size: %d>\n%!" (Unix.gettimeofday () -. t0) (List.length slice);
   let slice_s = OpamPackage.Set.of_list slice in
-  Printf.printf "< %.2f \n%!" (Unix.gettimeofday () -. t0);
   let solution = make_request u slice_s in
-  Printf.printf "> %.2f \n%!" (Unix.gettimeofday () -. t0);
+  Printf.printf "%.2f: DONE  %!" (Unix.gettimeofday () -. t0);
   match solution with
   | Ok installable ->
     let useful = OpamPackage.Set.inter slice_s installable in
@@ -77,15 +77,11 @@ let version_weights all_packages : float OpamPackage.Map.t =
 
 let run () =
   OpamClientConfig.opam_init
-    (* ~solver:(lazy (module OpamBuiltinZ3)) *)
-    (* ~solver:(lazy (module OpamCudfSolver.Aspcud)) *)
     ~solver:(lazy (module OpamZ3))
-    (* ~best_effort:true *)
     ();
   let gs = OpamGlobalState.load `Lock_read in
   OpamSwitchState.with_ `Lock_read gs (fun switch ->
     let u = get_universe switch in
-    (* let all_packages = u.u_packages in *)
     let all_packages = OpamSolver.installable u in
     let all_names = OpamPackage.names_of_packages all_packages in
     let all_packages_last_version =
@@ -93,11 +89,8 @@ let run () =
       |> OSeq.map (OpamPackage.max_version all_packages)
       |> OpamPackage.Set.of_seq
     in
-    Printf.eprintf "all packages: %d\n%!" (card all_packages);
-    (* Printf.eprintf "all installable packages: %d\n%!" (card (OpamSolver.installable u)); *)
+    Printf.eprintf "all (installable) packages: %d\n%!" (card all_packages);
     Printf.eprintf "all packages last version: %d\n%!" (card all_packages_last_version);
-    (* Printf.eprintf "all packages: %d\n%!"
-     *   OpamPackage.(Name.Set.cardinal (names_of_packages all_packages)); *)
 
     let vw = version_weights all_packages in
     let all_packages_list =
@@ -106,9 +99,8 @@ let run () =
       |> List.stable_sort (fun p1 p2 ->
         Float.compare (OpamPackage.Map.find p2 vw) (OpamPackage.Map.find p1 vw))
     in
-
     let (sets, uninst) =
-      cover ~slice_size:(card all_packages_last_version)
+      cover ~slice_size:(card all_packages)
         u [] [] all_packages_list
     in
     Printf.printf "\n";

@@ -503,7 +503,6 @@ let call ~criteria ?timeout (preamble, universe, request as cudf) =
       let batch = List.map snd batch in
       log "Trying to install %s...%!"
         ((List.map Z3.Expr.to_string batch) |> String.concat " ");
-      push1 ();
       (* Z3.Optimize.add opt batch; *)
       let _handle =
         Z3.Optimize.maximize opt
