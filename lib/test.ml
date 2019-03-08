@@ -109,7 +109,7 @@ let run () =
     in
 
     let (sets, uninst) =
-      cover ~slice_size:2000
+      cover ~slice_size:(card all_packages_last_version)
         u [] [] all_packages_list
     in
     Printf.printf "\n";
