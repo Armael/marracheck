@@ -8,20 +8,29 @@ let get_universe switch =
   }
 
 let make_request u packages =
-  let req = OpamSolver.request
+  let req =
+    OpamSolver.request
       ~install:(OpamSolution.eq_atoms_of_packages packages)
       ()
   in
   let res = OpamSolver.resolve u ~orphans:OpamPackage.Set.empty req in
   match res with
   | Success solution ->
-    Ok (OpamSolver.new_packages solution)
+    Ok solution
   | Conflicts c ->
     Error c
 
 let card = OpamPackage.Set.cardinal
 
 let t0 = Unix.gettimeofday ()
+
+type cover_elt = {
+  solution: OpamSolver.solution;
+  useful: OpamPackage.Set.t;
+}
+
+let installable { solution; _ } =
+  OpamSolver.new_packages solution
 
 let rec cover u acc to_install =
   Printf.printf "%.2f: <to_install size: %d>\n%!"
@@ -30,13 +39,14 @@ let rec cover u acc to_install =
   let solution = make_request u to_install_s in
   Printf.printf "%.2f: DONE  %!" (Unix.gettimeofday () -. t0);
   match solution with
-  | Ok installable ->
+  | Ok solution ->
+    let installable = OpamSolver.new_packages solution in
     let useful = OpamPackage.Set.inter to_install_s installable in
     let useful_nb = card useful in
     Printf.printf "(%d|%d)\n\n%!" useful_nb (card installable);
     if useful_nb = 0 then (List.rev acc, Error to_install)
     else
-      let acc' = (installable, useful, useful_nb) :: acc in
+      let acc' = { solution; useful } :: acc in
       let to_install' =
         List.filter (fun pkg -> not (OpamPackage.Set.mem pkg installable))
           to_install
@@ -89,13 +99,13 @@ let run () =
       |> List.stable_sort (fun p1 p2 ->
         Float.compare (OpamPackage.Map.find p2 vw) (OpamPackage.Map.find p1 vw))
     in
-    let (sets, uninst) = cover u [] all_packages_list in
-    CCIO.with_out dump_file (fun cout -> output_value cout (sets, uninst));
+    let (elts, uninst) = cover u [] all_packages_list in
+    CCIO.with_out dump_file (fun cout -> output_value cout (elts, uninst));
     Printf.printf "\n";
-    List.iter (fun (installable, _useful, useful_nb) ->
+    List.iter (fun cover_elt ->
       Printf.printf "(%d|%d) "
-        (OpamPackage.Set.cardinal installable) useful_nb
-    ) sets;
+        (card (installable cover_elt)) (card cover_elt.useful)
+    ) elts;
     Printf.printf "\n";
     match uninst with
     | Ok () -> ()
