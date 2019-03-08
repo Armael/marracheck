@@ -25,8 +25,8 @@ let default_criteria = {
    *                 -count[version-lag,request],\
    *                 -count[version-lag,changed],\
    *                 -changed"; *)
-  crit_default = "-count[version-lag,request],\
-                  -count[version-lag,changed]";
+  crit_default = "-count[version-lag,changed],\
+                  -new";
   crit_upgrade = "-removed,\
                   -count[version-lag,solution],\
                   -new";
