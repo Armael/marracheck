@@ -23,39 +23,26 @@ let card = OpamPackage.Set.cardinal
 
 let t0 = Unix.gettimeofday ()
 
-let rec cover ~slice_size u acc acc_uninst to_install =
-  let slice, to_install_rest = CCList.take_drop slice_size to_install in
-  Printf.printf "%.2f: <slice size: %d>\n%!" (Unix.gettimeofday () -. t0) (List.length slice);
-  let slice_s = OpamPackage.Set.of_list slice in
-  let solution = make_request u slice_s in
+let rec cover u acc to_install =
+  Printf.printf "%.2f: <to_install size: %d>\n%!"
+    (Unix.gettimeofday () -. t0) (List.length to_install);
+  let to_install_s = OpamPackage.Set.of_list to_install in
+  let solution = make_request u to_install_s in
   Printf.printf "%.2f: DONE  %!" (Unix.gettimeofday () -. t0);
   match solution with
   | Ok installable ->
-    let useful = OpamPackage.Set.inter slice_s installable in
+    let useful = OpamPackage.Set.inter to_install_s installable in
     let useful_nb = card useful in
-    let useful_for_later =
-      List.filter (fun pkg -> OpamPackage.Set.mem pkg installable)
-        to_install_rest in
-    Printf.printf "(%d|%d|%d) %d\n%!"
-      useful_nb (card installable) (List.length useful_for_later)
-      (List.fold_left (+) 0 @@ List.map snd acc);
-    let acc', acc_uninst', to_install_rest' =
-      if useful_nb = 0 then acc, slice_s :: acc_uninst, to_install_rest
-      else
-        let acc' = (installable, card useful + List.length useful_for_later) :: acc in
-        let slice_rest =
-          OpamPackage.Set.diff slice_s useful
-          |> OpamPackage.Set.to_seq
-          |> OSeq.to_list in
-        let to_install_rest' =
-          List.filter (fun pkg -> not (OpamPackage.Set.mem pkg installable))
-            to_install_rest in
-        acc', acc_uninst, slice_rest @ to_install_rest'
-    in
-    if to_install_rest' = [] then
-      (List.rev acc', List.rev acc_uninst')
+    Printf.printf "(%d|%d)\n\n%!" useful_nb (card installable);
+    if useful_nb = 0 then (List.rev acc, Error to_install)
     else
-      cover ~slice_size u acc' acc_uninst' to_install_rest'
+      let acc' = (installable, useful, useful_nb) :: acc in
+      let to_install' =
+        List.filter (fun pkg -> not (OpamPackage.Set.mem pkg installable))
+          to_install
+      in
+      if to_install' = [] then (List.rev acc, Ok ())
+      else cover u acc' to_install'
   | Error _c ->
     failwith "Conflict"
 
@@ -75,6 +62,8 @@ let version_weights all_packages : float OpamPackage.Map.t =
   |> OSeq.flatten
   |> OpamPackage.Map.of_seq
 
+let dump_file = "last_run.dump"
+
 let run () =
   OpamClientConfig.opam_init
     ~solver:(lazy (module OpamZ3))
@@ -90,7 +79,8 @@ let run () =
       |> OpamPackage.Set.of_seq
     in
     Printf.eprintf "all (installable) packages: %d\n%!" (card all_packages);
-    Printf.eprintf "all packages last version: %d\n%!" (card all_packages_last_version);
+    Printf.eprintf "all (installable) packages last version: %d\n%!"
+      (card all_packages_last_version);
 
     let vw = version_weights all_packages in
     let all_packages_list =
@@ -99,15 +89,16 @@ let run () =
       |> List.stable_sort (fun p1 p2 ->
         Float.compare (OpamPackage.Map.find p2 vw) (OpamPackage.Map.find p1 vw))
     in
-    let (sets, uninst) =
-      cover ~slice_size:(card all_packages)
-        u [] [] all_packages_list
-    in
+    let (sets, uninst) = cover u [] all_packages_list in
+    CCIO.with_out dump_file (fun cout -> output_value cout (sets, uninst));
     Printf.printf "\n";
-    List.iter (fun (s, su) -> Printf.printf "(%d|%d) "
-                  (OpamPackage.Set.cardinal s) su
-              ) sets;
-    Printf.printf "\nuninstallable:\n";
-    List.iter (fun s -> Printf.printf "%d " (OpamPackage.Set.cardinal s)) uninst;
-    Printf.printf "\n"
+    List.iter (fun (installable, _useful, useful_nb) ->
+      Printf.printf "(%d|%d) "
+        (OpamPackage.Set.cardinal installable) useful_nb
+    ) sets;
+    Printf.printf "\n";
+    match uninst with
+    | Ok () -> ()
+    | Error uninst ->
+      Printf.printf "uninstallable: %d\n" (List.length uninst)
   )
