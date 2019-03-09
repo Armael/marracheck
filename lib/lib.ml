@@ -91,27 +91,15 @@ let version_weights all_packages : float OpamPackage.Map.t =
 
 let dump_file = "last_run.dump"
 
-let compute_cover switch =
-    let u = get_universe switch in
-    let all_packages = OpamSolver.installable u in
-    let all_names = OpamPackage.names_of_packages all_packages in
-    let all_packages_last_version =
-      OpamPackage.Name.Set.to_seq all_names
-      |> OSeq.map (OpamPackage.max_version all_packages)
-      |> OpamPackage.Set.of_seq
-    in
-    Printf.eprintf "all (installable) packages: %d\n%!" (card all_packages);
-    Printf.eprintf "all (installable) packages last version: %d\n%!"
-      (card all_packages_last_version);
-
-    let vw = version_weights all_packages in
-    let all_packages_list =
-      OpamPackage.Set.to_seq all_packages
+let compute_cover u packages =
+    let vw = version_weights packages in
+    let packages_list =
+      OpamPackage.Set.to_seq packages
       |> OSeq.to_list
       |> List.stable_sort (fun p1 p2 ->
         Float.compare (OpamPackage.Map.find p2 vw) (OpamPackage.Map.find p1 vw))
     in
-    cover u [] all_packages_list
+    cover u [] packages_list
 
 let install_cover_elt switch { solution; _ } =
   let action_graph = OpamSolver.get_atomic_action_graph solution in
