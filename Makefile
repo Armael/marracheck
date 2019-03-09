@@ -1,6 +1,7 @@
 all:
 	dune build src/compute_cover.exe
 	dune build src/worker.exe
+	dune build src/opam_bin_cache.exe
 
 top:
 	dune utop lib

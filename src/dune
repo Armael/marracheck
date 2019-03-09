@@ -1,3 +1,9 @@
 (executables
   (names compute_cover worker)
+  (modules compute_cover worker)
   (libraries opamcheck2_lib))
+
+(executable
+  (name opam_bin_cache)
+  (modules opam_bin_cache)
+  (libraries bos fpath rresult))
