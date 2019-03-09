@@ -78,7 +78,7 @@ let version_weights all_packages : float OpamPackage.Map.t =
   |> OpamPackage.Name.Map.to_seq
   |> OSeq.map (fun (pkg_name, versions) ->
     let versions_l =
-      OpamPackage.Version.Set.to_seq versions |> OSeq.to_list
+      OpamPackage.Version.Set.elements versions
       |> List.stable_sort OpamPackage.Version.compare in
     let incr = 1. /. float (List.length versions_l) in
     versions_l
@@ -94,8 +94,7 @@ let dump_file = "last_run.dump"
 let compute_cover u packages =
     let vw = version_weights packages in
     let packages_list =
-      OpamPackage.Set.to_seq packages
-      |> OSeq.to_list
+      OpamPackage.Set.elements packages
       |> List.stable_sort (fun p1 p2 ->
         Float.compare (OpamPackage.Map.find p2 vw) (OpamPackage.Map.find p1 vw))
     in
