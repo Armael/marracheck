@@ -106,3 +106,22 @@ let install_cover_elt switch { solution; _ } =
     ~requested:OpamPackage.Set.empty
     ~assume_built:false
     action_graph
+
+let repair_cover u cover broken_pkgs =
+  CCList.flat_map (fun elt ->
+    let elt_pkgs = installable elt in
+    let elt_broken = OpamPackage.Set.inter elt_pkgs broken_pkgs in
+    if OpamPackage.Set.is_empty elt_broken then
+      [elt]
+    else
+      let elt_pkgs = OpamPackage.Set.diff elt_pkgs elt_broken in
+      let (elt_new_cover, uninst) = compute_cover u elt_pkgs in
+      assert (uninst = Ok ());
+      Format.printf "Repaired: %a -> %a@."
+        pp_cover_elt elt
+        (Format.pp_print_list
+           ~pp_sep:(fun ppf () -> Format.fprintf ppf ", ")
+           pp_cover_elt)
+        elt_new_cover;
+      elt_new_cover
+  ) cover

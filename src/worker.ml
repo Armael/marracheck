@@ -10,26 +10,52 @@ let print_cover elts =
   ) elts;
   Format.printf "@]"
 
-let () =
+let parse_cmdline () =
   match Sys.argv |> Array.to_list |> List.tl with
-  | [] ->
-    print_cover (read_cover ())
+  | [] -> `Print_cover
   | ["--install"; nb] ->
     let elts = read_cover () in
-    let n =
-      match int_of_string nb with
-      | n when 0 <= n && n < List.length elts -> n
-      | n -> Format.eprintf "Invalid number %d@." n; exit 1
-      | exception _ -> Format.eprintf "Not a number: %s@." nb; exit 1
-    in
-    let elt = List.nth elts n in
+    begin match int_of_string nb with
+    | n when 0 <= n && n < List.length elts -> `Install n
+    | n -> Format.eprintf "Invalid number %d@." n; exit 1
+    | exception _ -> Format.eprintf "Not a number: %s@." nb; exit 1
+    end
+  | _ ->
+    Format.printf "usage: %s [--install <n>]@." Sys.argv.(0);
+    exit 1
+
+let () =
+  match parse_cmdline () with
+  | `Print_cover ->
+    print_cover (read_cover ())
+  | `Install n ->
+    let elt = List.nth (read_cover ()) n in
     OpamClientConfig.opam_init ();
     let gs = OpamGlobalState.load `Lock_write in
     let (_switch', _res) =
       OpamSwitchState.with_ `Lock_write gs (fun switch ->
-        Lib.install_cover_elt switch elt
+        let u = Lib.get_universe switch in
+        let action_graph = OpamSolver.get_atomic_action_graph elt.Lib.solution in
+        let fetch_res =
+          OpamSolution.fetch_action_packages switch
+            ~inplace:OpamPackage.Map.empty
+            action_graph in
+        let repaired_elt =
+          match fetch_res with
+          | `Success | `Nonfatal_dl_errors _ -> [elt]
+          | `Fatal_dl_errors failed_downloads ->
+            Lib.repair_cover u [elt]
+              (OpamPackage.Set.of_list (OpamPackage.Map.keys failed_downloads))
+        in
+        match repaired_elt with
+        | [elt'] ->
+          let action_graph = OpamSolver.get_atomic_action_graph elt'.Lib.solution in
+          OpamSolution.parallel_apply_after_fetch switch
+            ~requested:OpamPackage.Set.empty
+            ~inplace:OpamPackage.Map.empty
+            ~assume_built:false
+            action_graph
+        | _ ->
+          failwith "oh no :("
       ) in
     ()
-  | _ ->
-    Format.printf "usage: %s [--install <n>]@." Sys.argv.(0);
-    exit 1
