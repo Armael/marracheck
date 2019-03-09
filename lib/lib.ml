@@ -91,12 +91,7 @@ let version_weights all_packages : float OpamPackage.Map.t =
 
 let dump_file = "last_run.dump"
 
-let run () =
-  OpamClientConfig.opam_init
-    ~solver:(lazy (module OpamZ3))
-    ();
-  let gs = OpamGlobalState.load `Lock_read in
-  OpamSwitchState.with_ `Lock_read gs (fun switch ->
+let compute_cover switch =
     let u = get_universe switch in
     let all_packages = OpamSolver.installable u in
     let all_names = OpamPackage.names_of_packages all_packages in
@@ -116,22 +111,11 @@ let run () =
       |> List.stable_sort (fun p1 p2 ->
         Float.compare (OpamPackage.Map.find p2 vw) (OpamPackage.Map.find p1 vw))
     in
-    let (elts, uninst) = cover u [] all_packages_list in
-    CCIO.with_out dump_file (fun cout -> output_value cout (elts, uninst));
-    Printf.printf "\n";
-    List.iter (fun cover_elt ->
-      Printf.printf "(%d|%d) "
-        (card (installable cover_elt)) (card cover_elt.useful)
-    ) elts;
-    Printf.printf "\n";
-    match uninst with
-    | Ok () -> ()
-    | Error uninst ->
-      Printf.printf "uninstallable: %d\n" (List.length uninst)
-  )
+    cover u [] all_packages_list
 
 let install_cover_elt switch { solution; _ } =
-  OpamSolution.apply ~ask:false switch
-    Install (* ignored *)
-    ~requested:OpamPackage.Name.Set.empty
-    solution
+  let action_graph = OpamSolver.get_atomic_action_graph solution in
+  OpamSolution.parallel_apply switch
+    ~requested:OpamPackage.Set.empty
+    ~assume_built:false
+    action_graph

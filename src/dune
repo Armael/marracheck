@@ -1,3 +1,3 @@
 (executables
-  (names test worker)
+  (names compute_cover worker)
   (libraries opamcheck2_lib))
