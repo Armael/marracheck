@@ -1,3 +1,15 @@
+(*
+pour setup from scratch:
+
+- OpamStateConfig.update pour mettre l'opamroot qu'on veut
+- OpamClient.init qui va populate l'opamroot et retourner le globalstate
+
+
+installer une solution:
+OpamSolution.apply
+
+*)
+
 let get_universe switch =
   let u = OpamSwitchState.universe switch
       ~requested:OpamPackage.Name.Set.empty
@@ -29,22 +41,27 @@ type cover_elt = {
   useful: OpamPackage.Set.t;
 }
 
+let pp_cover_elt fmt { solution; useful } =
+  Format.fprintf fmt "{inst:%d, useful:%d}"
+    (card (OpamSolver.new_packages solution))
+    (card useful)
+
 let installable { solution; _ } =
   OpamSolver.new_packages solution
 
 let rec cover u acc to_install =
-  Printf.printf "%.2f: <to_install size: %d>\n%!"
+  Format.printf "%.2f: <to_install size: %d>\n%!"
     (Unix.gettimeofday () -. t0) (List.length to_install);
   let to_install_s = OpamPackage.Set.of_list to_install in
   let solution = make_request u to_install_s in
-  Printf.printf "%.2f: DONE  %!" (Unix.gettimeofday () -. t0);
+  Format.printf "%.2f: DONE  %!" (Unix.gettimeofday () -. t0);
   match solution with
   | Ok solution ->
     let installable = OpamSolver.new_packages solution in
     let useful = OpamPackage.Set.inter to_install_s installable in
-    let useful_nb = card useful in
-    Printf.printf "(%d|%d)\n\n%!" useful_nb (card installable);
-    if useful_nb = 0 then (List.rev acc, Error to_install)
+    Format.printf "%a\n\n%!" pp_cover_elt { solution; useful };
+      if OpamPackage.Set.is_empty useful then
+        (List.rev acc, Error to_install)
     else
       let acc' = { solution; useful } :: acc in
       let to_install' =
@@ -112,3 +129,9 @@ let run () =
     | Error uninst ->
       Printf.printf "uninstallable: %d\n" (List.length uninst)
   )
+
+let install_cover_elt switch { solution; _ } =
+  OpamSolution.apply ~ask:false switch
+    Install (* ignored *)
+    ~requested:OpamPackage.Name.Set.empty
+    solution
