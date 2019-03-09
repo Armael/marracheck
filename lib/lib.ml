@@ -60,15 +60,15 @@ let rec cover u acc to_install =
     let installable = OpamSolver.new_packages solution in
     let useful = OpamPackage.Set.inter to_install_s installable in
     Format.printf "%a\n\n%!" pp_cover_elt { solution; useful };
-      if OpamPackage.Set.is_empty useful then
-        (List.rev acc, Error to_install)
+    if OpamPackage.Set.is_empty useful then
+      (List.rev acc, Error to_install)
     else
       let acc' = { solution; useful } :: acc in
       let to_install' =
         List.filter (fun pkg -> not (OpamPackage.Set.mem pkg installable))
           to_install
       in
-      if to_install' = [] then (List.rev acc, Ok ())
+      if to_install' = [] then (List.rev acc', Ok ())
       else cover u acc' to_install'
   | Error _c ->
     failwith "Conflict"
@@ -92,20 +92,13 @@ let version_weights all_packages : float OpamPackage.Map.t =
 let dump_file = "last_run.dump"
 
 let compute_cover u packages =
-    let vw = version_weights packages in
-    let packages_list =
-      OpamPackage.Set.elements packages
-      |> List.stable_sort (fun p1 p2 ->
-        Float.compare (OpamPackage.Map.find p2 vw) (OpamPackage.Map.find p1 vw))
-    in
-    cover u [] packages_list
-
-let install_cover_elt switch { solution; _ } =
-  let action_graph = OpamSolver.get_atomic_action_graph solution in
-  OpamSolution.parallel_apply switch
-    ~requested:OpamPackage.Set.empty
-    ~assume_built:false
-    action_graph
+  let vw = version_weights packages in
+  let packages_list =
+    OpamPackage.Set.elements packages
+    |> List.stable_sort (fun p1 p2 ->
+      Float.compare (OpamPackage.Map.find p2 vw) (OpamPackage.Map.find p1 vw))
+  in
+  cover u [] packages_list
 
 let repair_cover u cover broken_pkgs =
   CCList.flat_map (fun elt ->
@@ -117,8 +110,10 @@ let repair_cover u cover broken_pkgs =
       let elt_pkgs = OpamPackage.Set.diff elt_pkgs elt_broken in
       let (elt_new_cover, uninst) = compute_cover u elt_pkgs in
       assert (uninst = Ok ());
-      Format.printf "Repaired: %a -> %a@."
+      assert (List.length elt_new_cover >= 1);
+      Format.printf "Repaired: %a - %d broken -> %a@."
         pp_cover_elt elt
+        (card elt_broken)
         (Format.pp_print_list
            ~pp_sep:(fun ppf () -> Format.fprintf ppf ", ")
            pp_cover_elt)

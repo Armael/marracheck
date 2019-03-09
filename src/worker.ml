@@ -55,6 +55,8 @@ let () =
             ~inplace:OpamPackage.Map.empty
             ~assume_built:false
             action_graph
+        | [] ->
+          assert false
         | _ ->
           failwith "oh no :("
       ) in
