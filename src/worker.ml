@@ -34,7 +34,12 @@ let () =
     let gs = OpamGlobalState.load `Lock_write in
     let (_switch', _res) =
       OpamSwitchState.with_ `Lock_write gs (fun switch ->
-        let u = Lib.get_universe switch in
+        OpamSolution.apply switch
+          ~ask:false
+          ~requested:OpamPackage.Name.Set.empty
+          ~assume_built:false
+          elt.Lib.solution
+(*
         let action_graph = OpamSolver.get_atomic_action_graph elt.Lib.solution in
         let fetch_res =
           OpamSolution.fetch_action_packages switch
@@ -58,6 +63,6 @@ let () =
         | [] ->
           assert false
         | _ ->
-          failwith "oh no :("
+          failwith "oh no :("*)
       ) in
     ()
