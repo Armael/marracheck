@@ -92,6 +92,7 @@ let () =
     OpamClientConfig.opam_init
       ~solver:(lazy (module OpamZ3))
       ~best_effort:false
+      ~switch_from:`Default (* disable switch-related user messages *)
       ();
 
     let switch_name = OpamSwitch.of_string compiler_variant in
