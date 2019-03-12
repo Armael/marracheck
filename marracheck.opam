@@ -1,0 +1,39 @@
+opam-version: "2.0"
+maintainer: [
+  "Armaël Guéneau <armael.gueneau@ens-lyon.fr>"
+  "Gabriel Scherer <gabriel.scherer@gmail.com>"
+]
+authors: [
+  "Armaël Guéneau <armael.gueneau@ens-lyon.fr>"
+  "Gabriel Scherer <gabriel.scherer@gmail.com>"
+]
+license: "MIT"
+homepage: "https://github.com/Armael/marracheck/"
+doc: "https://gitlab.com/gasche/marracheck-design-notes"
+bug-reports: "https://github.com/Armael/marracheck/issues"
+dev-repo: "git+https://github.com/Armael/marracheck.git"
+build: [
+  ["dune" "build" "-p" name "-j" jobs]
+]
+depends: [
+  "dune"     {build >= "1.0.0"}
+  "opam-state" {>= "2.0.0"}
+  "opam-solver" {>= "2.0.0"}
+  "opam-client" {>= "2.0.0"}
+  "bos"
+  "oseq"
+  "containers"
+  "z3"
+]
+pin-depends: [
+  ["opam-client.2.0.3" "git+https://github.com/Armael/opam#marracheck"]
+  ["opam-core.2.0.3" "git+https://github.com/Armael/opam#marracheck"]
+  ["opam-format.2.0.3" "git+https://github.com/Armael/opam#marracheck"]
+  ["opam-repository.2.0.3" "git+https://github.com/Armael/opam#marracheck"]
+  ["opam-solver.2.0.3" "git+https://github.com/Armael/opam#marracheck"]
+  ["opam-state.2.0.3" "git+https://github.com/Armael/opam#marracheck"]
+]
+synopsis: "Gotta check them all!"
+description: """
+Marracheck builds all opam packages at once. Or at least tries fairly hard.
+"""
