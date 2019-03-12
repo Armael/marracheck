@@ -39,12 +39,21 @@ let () =
     in
 
     let opamroot =
-      let open OpamFilename in
-      Op.(Dir.of_string working_dir / "opamroot") in
+      let root_dir =
+        let open OpamFilename in
+        Op.(Dir.of_string working_dir / "opamroot") in
+      OpamStateConfig.opamroot ~root_dir ()
+    in
 
-    OpamStateConfig.update ~root_dir:opamroot ();
-    begin match OpamStateConfig.load opamroot with
-      | None ->
+    OpamClientConfig.opam_init
+      ~solver:(lazy (module OpamZ3))
+      ~best_effort:false
+      ~root_dir:opamroot
+      ~no_env_notice:true
+      ();
+
+    begin match OpamFile.exists (OpamPath.config opamroot) with
+      | false ->
         (* opam init *)
         log "Initializing a fresh opam root in %s..."
           (OpamFilename.Dir.to_string opamroot);
@@ -73,7 +82,7 @@ let () =
         in
         log "Done initializing a fresh opam root";
         ()
-      | Some _ ->
+      | true ->
         log "Found an existing opam root in %s"
           (OpamFilename.Dir.to_string opamroot);
         log "Updating the repository...";
@@ -88,12 +97,6 @@ let () =
         log "Done updating the repository."
         end
     end;
-
-    OpamClientConfig.opam_init
-      ~solver:(lazy (module OpamZ3))
-      ~best_effort:false
-      ~switch_from:`Default (* disable switch-related user messages *)
-      ();
 
     let switch_name = OpamSwitch.of_string compiler_variant in
     OpamGlobalState.with_ `Lock_write @@ begin fun gt ->
