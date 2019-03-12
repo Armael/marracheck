@@ -3,11 +3,23 @@ pour setup from scratch:
 
 - OpamStateConfig.update pour mettre l'opamroot qu'on veut
 - OpamClient.init qui va populate l'opamroot et retourner le globalstate
-
+  (et on peut lui donner en paramètre le repo)
 
 installer une solution:
 OpamSolution.apply
 
+----
+
+concernant les fichiers changes:
+
+- il faut les générer en ayant fait OpamCoreConfig.update ~precise_tracking:true
+
+  (pour calculer des hashes pour les fichiers, sinon ça calcule des timestamp
+  parce qu'on veut juste savoir si des fichiers ont changé)
+
+- pour les récupérer :
+  OpamPath.Switch.changes root switch name
+  |> OpamFile.Changes.read
 *)
 
 let get_universe switch =

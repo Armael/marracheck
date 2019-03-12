@@ -1,6 +1,6 @@
 (executables
-  (names compute_cover worker)
-  (modules compute_cover worker)
+  (names compute_cover worker marracheck)
+  (modules compute_cover worker marracheck)
   (libraries opamcheck2_lib))
 
 (executable
