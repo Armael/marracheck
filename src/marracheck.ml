@@ -1,8 +1,56 @@
 open Opamcheck2_lib
 open OpamTypes
-open OpamStateTypes
+module ST = OpamStateTypes
 
 let log fmt = Printf.fprintf stderr ("LOG: " ^^ fmt ^^ "\n%!")
+
+
+type 'a versioned = {
+  head : 'a;
+  git_repo : dirname; (* fixme: opam type for git repos? *)
+}
+
+type 'a serialized = {
+  data : 'a;
+  path : filename;
+}
+
+type timestamp = string (* Fixme: git hash *)
+type cover_element_id = int
+type cover = OpamPackage.Set.t list
+type build_log = string
+type changes = unit (* fixme *)
+type error_cause = [ `Fetch | `Build | `Install ]
+
+type package_report =
+  | Success of { log : build_log; changes : changes }
+  | Error of { log : build_log; cause : error_cause }
+  | Aborted of { deps : OpamPackage.Set.t }
+
+type cover_element_report = (OpamPackage.t * package_report) list
+
+type report = cover_element_report list
+
+type cover_state = {
+  timestamp : timestamp;
+  cover : cover serialized;
+  report : report serialized;
+  cover_element_id : cover_element_id serialized;
+}
+
+type switch_state = {
+  path : dirname;
+  log : filename;
+  current_timestamp : cover_state versioned;
+  past_timestamps : dirname;
+}
+
+type work_state = {
+  opamroot : dirname;
+  cache : dirname;
+  switches : switch_state OpamPackage.Map.t;
+}
+
 
 let validate_compiler_variant s =
   let open OpamPackage in
@@ -80,6 +128,7 @@ let () =
             ~completion:false
             (OpamStd.Sys.guess_shell_compat ())
         in
+        (* TODO: setup the binary cache script *)
         log "Done initializing a fresh opam root";
         ()
       | true ->
@@ -121,8 +170,8 @@ let () =
           (gt, OpamSwitchState.unlock sw)
         end
       in
-      ignore (gt : unlocked global_state);
-      ignore (sw : unlocked switch_state);
+      ignore (gt : ST.unlocked ST.global_state);
+      ignore (sw : ST.unlocked ST.switch_state);
     end;
 
   | "cache" :: _ ->
