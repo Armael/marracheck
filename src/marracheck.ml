@@ -11,8 +11,15 @@ module Versioned = struct
     git_repo : dirname; (* fixme: opam type for git repos? *)
   }
 
-  let load_and_clean ~(repo : dirname) : 'a t =
-    let _ = repo in assert false
+  let load_and_clean
+      ~(repo : dirname)
+      ~(load : dirname -> 'a)
+    : 'a t =
+    (* cleanup uncommited modifications *)
+    let _ = repo, load in assert false
+
+  let commit_new_head (_st: 'a t) ~(sync : dir:dirname -> 'a -> unit) : unit =
+    let _ = sync in assert false
 end
 
 type 'a serialized = {
@@ -52,6 +59,12 @@ module Cover_state = struct
     report : report serialized;
     cover_element_id : element_id serialized;
   }
+
+  let load ~dir:_ : t =
+    assert false
+
+  let sync ~dir:_ _state : unit =
+    assert false
 end
 
 module Switch_state = struct
@@ -67,6 +80,7 @@ module Work_state = struct
   type 'a t = {
     opamroot : dirname;
     cache : dirname;
+    switches : dirname;
     view : 'a;
   }
 
@@ -145,6 +159,28 @@ let validate_compiler_variant s =
     then Some pkg
     else None
 
+let create_new_switch gt ~switch_name ~compiler =
+  log "Creating a new switch %s..." (OpamSwitch.to_string switch_name);
+  let (gt, sw) =
+    OpamRepositoryState.with_ `Lock_none gt @@ begin fun rt ->
+      (* setup a new switch with [compiler_variant] as compiler *)
+      OpamSwitchCommand.install gt ~rt
+        ~update_config:true
+        ~local_compiler:false
+        ~packages:[compiler.name, Some (`Eq, compiler.version)]
+        switch_name
+    end in
+  log "New switch successfully created";
+  (gt, sw)
+
+let remove_switch gt ~switch_name =
+  OpamSwitchCommand.remove gt ~confirm:false switch_name
+
+(* Relatives to a timestamp directory *)
+let cover_path = OpamFilename.of_string "cover.json"
+let report_path = OpamFilename.of_string "report.json"
+let cover_element_id_path = OpamFilename.of_string "cover_element_build.id"
+
 let () =
   match Sys.argv |> Array.to_list |> List.tl with
   | "run" ::
@@ -158,7 +194,7 @@ let () =
     (* TODO: make sure that working_dir exists; if it exists, is not empty, and
        does not contain a valid opamroot -> exit with an error *)
 
-    let packages_selection = `All in
+    let pkgs_selection = `All in
 
     let compiler = match validate_compiler_variant compiler_variant with
       | None ->
@@ -243,17 +279,7 @@ let () =
             OpamSwitchAction.set_current_switch `Lock_none gt switch_name in
           (OpamGlobalState.unlock gt, sw)
         end else begin
-          log "Creating a new switch %s..." compiler_variant;
-          let (gt, sw) =
-            OpamRepositoryState.with_ `Lock_none gt @@ begin fun rt ->
-              (* setup a new switch with [compiler_variant] as compiler *)
-              OpamSwitchCommand.install gt ~rt
-                ~update_config:true
-                ~local_compiler:false
-                ~packages:[compiler.name, Some (`Eq, compiler.version)]
-                switch_name
-            end in
-          log "New switch successfully created";
+          let (gt, sw) = create_new_switch gt ~switch_name ~compiler in
           (gt, OpamSwitchState.unlock sw)
         end
       in
@@ -267,9 +293,9 @@ let () =
       let view = Work_state.View_single.load_or_create compiler in
       Work_state.load_or_create ~view ~workdir in
     let switch_state = work_state.view in
-    let cover_state =
+    let cover_state, switch_state =
       match switch_state.current_timestamp.head with
-      | Some c -> c
+      | Some c -> c, switch_state
       | None ->
         OpamGlobalState.with_ `Lock_none @@ fun gt ->
         OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
@@ -277,8 +303,62 @@ let () =
             ~requested:OpamPackage.Name.Set.empty
             OpamTypes.Query (* for historical reasons; should not matter *)
         in
-        Cover.compute u (compute_package_selection u compiler package_selection)
+        let selection = compute_package_selection u compiler pkgs_selection in
+        let cover = Cover.compute u selection in
+        let cover_state = Cover_state.{
+          timestamp = get_repo_timestamp ();
+          cover = Cover.{ data = cover; path = cover_path };
+          report = Cover.{ data = []; path = report_path };
+          cover_element_id = Cover.{ data = 0; path = cover_element_id_path };
+        } in
+        let current_timestamp =
+          { switch_state.current_timestamp with head = Some cover_state } in
+        Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp;
+        cover_state, { switch_state with current_timestamp }
     in
+
+    (* A cover_state has been fetched, or a fresh one was created if there was
+       none. *)
+
+    (* Are the packages currently installed in the opam switch compatible with
+       the current cover_state? (are they included in the current cover
+       element?) *)
+    let cover_elt =
+      try
+        List.nth cover_state.cover.data
+          cover_state.cover_element_id.data
+      with Failure _ ->
+        Printf.eprintf "In %s: invalid id (out of bounds)\n"
+          (OpamFilename.Dir.to_string
+             (OpamFilename.(Op.(workdir /
+                                Dir.to_string work_state.switches /
+                                Dir.to_string switch_state.path /
+                                Dir.to_string switch_state.current_timestamp.git_repo /
+                                to_string cover_element_id_path))));
+        exit 1
+    in
+    OpamGlobalState.with_ `Lock_none @@ fun gt ->
+    OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
+    let reinstall_switch =
+      not (OpamPackage.Set.subset sw.installed (Lib.installable cover_elt))
+    in
+    let sw, gt =
+      if reinstall_switch then begin
+        log "Unwanted packages are currently installed; re-creating the switch...";
+        let sw, gt =
+          OpamGlobalState.with_write_lock gt @@ fun gt ->
+          let gt = remove_switch gt ~switch_name in
+          let gt, sw = create_new_switch gt ~switch_name ~compiler in
+          ignore (OpamSwitchState.unlock sw);
+          OpamGlobalState.with_write_lock gt @@ fun gt ->
+          OpamSwitchAction.set_current_switch `Lock_none gt switch_name, gt in
+        OpamSwitchState.unlock sw, OpamGlobalState.unlock gt
+      end else
+        sw, gt
+    in
+
+    (* The cover element can now be built in the current opam switch *)
+
     ()
 
   | "cache" :: _ ->
