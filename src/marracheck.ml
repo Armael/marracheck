@@ -39,21 +39,58 @@ let read_json (file: filename): Json.t =
   | Ok j -> j
   | Error () -> fatal "In %s: parsing error" (OpamFilename.prettify file)
 
+let must_succeed cmd res =
+  if OpamProcess.is_failure res then
+    fatal "Running %s failed:\n %s\n%!"
+      (OpamProcess.string_of_command cmd)
+      (OpamProcess.string_of_result res)
+
 module Versioned = struct
   type 'a t = {
     head : 'a option;
-    git_repo : dirname; (* fixme: opam type for git repos? *)
+    git_repo : dirname;
   }
 
   let load_and_clean
       ~(repo : dirname)
       ~(load : dir:dirname -> 'a)
     : 'a t =
-    (* do git init if not a git repo; cleanup uncommited modifications *)
-    let _ = repo, load in assert false
+    let open OpamProcess in
+    let repo_s = OpamFilename.Dir.to_string repo in
+    mkdir repo;
+    if not (OpamGit.VCS.exists repo) then begin
+      let cmd = command ~dir:repo_s "git" [ "init" ] in
+      run cmd |> must_succeed cmd
+    end;
+    (* cleanup uncommited modifications *)
+    if Job.run (OpamGit.VCS.is_dirty repo) then begin
+      Job.of_list [
+        command ~dir:repo_s "git" [ "reset"; "--hard"; "HEAD" ];
+        command ~dir:repo_s "git" [ "clean"; "-xfd" ];
+      ] |> Job.run
+      |> OpamStd.Option.iter (fun (cmd, res) -> must_succeed cmd res)
+    end;
+    match Job.run (OpamGit.VCS.revision repo) with
+    | None ->
+      (* No commits recorded *)
+      { head = None; git_repo = repo }
+    | Some _ ->
+      { head = Some (load ~dir:repo); git_repo = repo }
 
-  let commit_new_head (_st: 'a t) ~(sync : 'a -> unit) : unit =
-    let _ = sync in assert false
+  let commit_new_head (st: 'a t) ~(sync : 'a -> unit) msg : unit =
+    let open OpamProcess in
+    let repo_s = OpamFilename.Dir.to_string st.git_repo in
+    match st.head with
+    | None ->
+      Printf.eprintf "WARNING: Versioned.commit_new_head: nothing to commit\n"
+    | Some data ->
+      sync data;
+      let msg = if msg = "" then "-" else msg in
+      Job.of_list [
+        command ~dir:repo_s "git" [ "add"; "*"; ];
+        command ~dir:repo_s "git" [ "commit"; "-a"; "-m"; msg ];
+      ] |> Job.run
+      |> OpamStd.Option.iter (fun (cmd, res) -> must_succeed cmd res)
 end
 
 module Serialized = struct
@@ -506,7 +543,8 @@ let () =
         } in
         let current_timestamp =
           { switch_state.current_timestamp with head = Some cover_state } in
-        Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp;
+        Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
+          "Initial cover";
         cover_state, { switch_state with current_timestamp }
     in
 
