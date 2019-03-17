@@ -1,4 +1,4 @@
-open Opamcheck2_lib
+open Marracheck_lib
 
 let read_cover () : Lib.cover_elt list =
   CCIO.with_in Lib.dump_file input_value |> fst

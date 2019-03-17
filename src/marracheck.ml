@@ -1,4 +1,4 @@
-open Opamcheck2_lib
+open Marracheck_lib
 open OpamTypes
 module ST = OpamStateTypes
 module Json = Ezjsonm

@@ -1,4 +1,4 @@
-open Opamcheck2_lib
+open Marracheck_lib
 
 let () =
   OpamClientConfig.opam_init
