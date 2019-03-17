@@ -41,7 +41,7 @@ let read_json (file: filename): Json.t =
 
 let must_succeed cmd res =
   if OpamProcess.is_failure res then
-    fatal "Running %s failed:\n %s\n%!"
+    fatal "Running '%s' failed:\n %s\n%!"
       (OpamProcess.string_of_command cmd)
       (OpamProcess.string_of_result res)
 
@@ -115,7 +115,7 @@ module Serialized = struct
     close_out cout
 end
 
-type timestamp = string (* Fixme: git hash *)
+type timestamp = string (* git hash *)
 type build_log = string
 type changes = Changes (* fixme *)
 type error_cause = [ `Fetch | `Build | `Install ]
@@ -518,13 +518,18 @@ let () =
     OpamGlobalState.with_ `Lock_write @@ begin fun gt ->
       let (gt, sw) =
         if OpamGlobalState.switch_exists gt switch_name then begin
-          log "Existing switch %s found" compiler_variant;
+          log "Existing opam switch %s found" compiler_variant;
           (* TODO: check that the switch repositories are what we expect
              (just our repository) (unlikely to not be the case) *)
           let sw =
             OpamSwitchAction.set_current_switch `Lock_none gt switch_name in
+          if OpamSwitchState.repos_list sw <> [OpamRepositoryName.default] then
+            fatal "Switch %s: unexpected list of repositories (expected [%s])"
+              (OpamSwitch.to_string switch_name)
+              (OpamRepositoryName.(to_string default));
           (OpamGlobalState.unlock gt, sw)
         end else begin
+          log "Creating new opam switch %s" compiler_variant;
           let (gt, sw) = create_new_switch gt ~switch_name ~compiler in
           (gt, OpamSwitchState.unlock sw)
         end
@@ -532,6 +537,8 @@ let () =
       ignore (gt : ST.unlocked ST.global_state);
       ignore (sw : ST.unlocked ST.switch_state);
     end;
+
+    log "Using opam switch %s" (OpamSwitch.to_string switch_name);
 
     (* we have a switch of the right name, attached to the right repository *)
 
