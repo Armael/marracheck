@@ -42,6 +42,14 @@ let compute_package_selection (u: universe) (compiler: package)
   | `Revdeps _ | `List _ ->
     assert false
 
+let validate_workdir working_dir =
+  let workdir = OpamFilename.Dir.of_string working_dir in
+  mkdir workdir;
+  if (OpamSystem.dir_is_empty working_dir) ||
+     (OpamFilename.exists_dir OpamFilename.Op.(workdir / opamroot_path))
+  then Some workdir
+  else None
+
 let validate_compiler_variant s =
   let open OpamPackage in
   match of_string_opt s with
@@ -102,31 +110,20 @@ let () =
     compiler_variant ::
     [] ->
 
-    let workdir = OpamFilename.Dir.of_string working_dir in
-    mkdir workdir;
-    if not (OpamSystem.dir_is_empty working_dir) &&
-       not (OpamFilename.exists_dir OpamFilename.Op.(workdir / opamroot_path))
-    then
-      fatal "%s is not empty but does not contain an %s"
-        working_dir opamroot_path;
+    let workdir = get_or_fatal (validate_workdir working_dir)
+        "%s is not empty but does not contain an %s"
+        working_dir opamroot_path in
 
     let pkgs_selection = `All in
 
-    let compiler = match validate_compiler_variant compiler_variant with
-      | None ->
-        fatal "Invalid compiler variant: %s\n" compiler_variant
-        (* TODO: expand on what is accepted: ocaml-base-compiler.XXX or
-           ocaml-variants.XXX *)
-      | Some pkg ->
-        pkg
-    in
+    let compiler = get_or_fatal (validate_compiler_variant compiler_variant)
+        "Invalid compiler variant: %s" compiler_variant in
+    (* TODO: expand on what is accepted: ocaml-base-compiler.XXX or
+       ocaml-variants.XXX *)
     assert (OpamPackage.to_string compiler = compiler_variant);
 
-    let repo_url = match validate_repo_url repo_url with
-      | None ->
-        fatal "Repo url must be a local git clone of an opam-repository"
-      | Some url -> url
-    in
+    let repo_url = get_or_fatal (validate_repo_url repo_url)
+        "Repo url must be a local git clone of an opam-repository" in
 
     let opamroot =
       let root_dir = OpamFilename.Op.(workdir / opamroot_path) in

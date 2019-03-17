@@ -27,3 +27,8 @@ let must_succeed cmd res =
     fatal "Running '%s' failed:\n %s\n%!"
       (OpamProcess.string_of_command cmd)
       (OpamProcess.string_of_result res)
+
+let get_or_fatal opt fmt =
+  match opt with
+  | Some x -> Printf.ikfprintf (fun _ -> x) stderr fmt
+  | None -> fatal fmt
