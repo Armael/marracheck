@@ -1,7 +1,7 @@
 (executables
   (names compute_cover worker marracheck)
   (modules compute_cover worker marracheck)
-  (libraries opamcheck2_lib))
+  (libraries opamcheck2_lib ezjsonm))
 
 (executable
   (name opam_bin_cache)

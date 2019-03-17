@@ -23,6 +23,7 @@ depends: [
   "bos"
   "oseq"
   "containers"
+  "ezjsonm"
   "z3"
 ]
 pin-depends: [

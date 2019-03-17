@@ -1,9 +1,43 @@
 open Opamcheck2_lib
 open OpamTypes
 module ST = OpamStateTypes
+module Json = Ezjsonm
 
 let log fmt = Printf.fprintf stderr ("LOG: " ^^ fmt ^^ "\n%!")
+let fatal fmt =
+  Printf.kfprintf (fun _ -> exit 1) stderr ("ERROR: " ^^ fmt ^^ "\n%!")
 
+(* Relative to the workdir *)
+let cache_path = "cache"
+let switches_path = "switches"
+let opamroot_path = "opamroot"
+
+(* Relative to a switch_state directory *)
+let log_path = "log"
+let current_timestamp_path = "current_timestamp.git"
+let past_timestamps_path = "past_timestamps"
+
+(* Relative to a current_timestamp.git directory *)
+let timestamp_path = "timestamp"
+let cover_path = "cover.json"
+let report_path = "report.json"
+let cover_element_id_path = "cover_element_build.id"
+
+let mkdir dir =
+  let dir = OpamFilename.Dir.to_string dir in
+  if Sys.file_exists dir && not (Sys.is_directory dir) then
+    fatal "Error: %s already exists but is not a directory" dir
+  else OpamSystem.mkdir dir
+
+let read_json (file: filename): Json.t =
+  let cin = open_in (OpamFilename.to_string file) in
+  let res =
+    try Ok (Json.from_channel cin) with
+      Json.Parse_error (_,_) -> Error () in
+  close_in cin;
+  match res with
+  | Ok j -> j
+  | Error () -> fatal "In %s: parsing error" (OpamFilename.prettify file)
 
 module Versioned = struct
   type 'a t = {
@@ -13,29 +47,89 @@ module Versioned = struct
 
   let load_and_clean
       ~(repo : dirname)
-      ~(load : dirname -> 'a)
+      ~(load : dir:dirname -> 'a)
     : 'a t =
-    (* cleanup uncommited modifications *)
+    (* do git init if not a git repo; cleanup uncommited modifications *)
     let _ = repo, load in assert false
 
-  let commit_new_head (_st: 'a t) ~(sync : dir:dirname -> 'a -> unit) : unit =
+  let commit_new_head (_st: 'a t) ~(sync : 'a -> unit) : unit =
     let _ = sync in assert false
 end
 
-type 'a serialized = {
-  data : 'a;
-  path : filename;
-}
+module Serialized = struct
+  type 'a t = {
+    data : 'a;
+    path : filename;
+  }
+
+  let load_raw ~file : string t =
+    { data = OpamSystem.read (OpamFilename.to_string file);
+      path = file }
+
+  let sync_raw (s : string t) =
+    OpamSystem.write (OpamFilename.to_string s.path) s.data
+
+  let load_json ~file (of_json : Json.t -> 'a) : 'a t =
+    let j = read_json file in
+    { data = of_json j; path = file }
+
+  let sync_json (s : 'a t) (to_json : 'a -> Json.t) =
+    let cout = open_out (OpamFilename.to_string s.path) in
+    Json.to_channel ~minify:false cout (to_json s.data);
+    close_out cout
+end
 
 type timestamp = string (* Fixme: git hash *)
 type build_log = string
-type changes = unit (* fixme *)
+type changes = Changes (* fixme *)
 type error_cause = [ `Fetch | `Build | `Install ]
 
 type package_report =
   | Success of { log : build_log; changes : changes }
   | Error of { log : build_log; cause : error_cause }
   | Aborted of { deps : OpamPackage.Set.t }
+
+let package_report_of_json (j: Json.value): package_report =
+  let l = Json.get_dict j in
+  try
+    begin match Json.get_string (List.assoc "status" l) with
+    | "success" ->
+      Success { log = Json.get_string (List.assoc "log" l);
+                changes = Changes (* TODO *) }
+    | "error" ->
+      let cause = match Json.get_string (List.assoc "cause" l) with
+        | "fetch" -> `Fetch
+        | "build" -> `Build
+        | "install" -> `Install
+        | _ -> raise Not_found
+      in
+      Error { log = Json.get_string (List.assoc "log" l); cause }
+    | "aborted" ->
+      let deps = match OpamPackage.Set.of_json (List.assoc "deps" l) with
+        | Some deps -> deps
+        | None -> raise Not_found
+      in
+      Aborted { deps }
+    | _ -> raise Not_found
+    end
+  with Not_found -> Json.parse_error `Null "" (* XX *)
+
+let package_report_to_json = function
+  | Success { log; changes = Changes (* TODO *) } ->
+    `O [ ("status", `String "success");
+         ("log", `String log) ]
+  | Error { log; cause } ->
+    let cause_s = match cause with
+      | `Fetch -> "fetch"
+      | `Build -> "build"
+      | `Install -> "install"
+    in
+    `O [ ("status", `String "error");
+         ("log", `String log);
+         ("cause", `String cause_s) ]
+  | Aborted { deps } ->
+    `O [ ("status", `String "aborted");
+         ("deps", OpamPackage.Set.to_json deps) ]
 
 module Cover = struct
   type t = Lib.cover_elt list
@@ -46,6 +140,32 @@ module Cover = struct
     (* [selection] must only contain installable packages (see
        [compute_package_selection]). *)
     cover
+
+  let solution_of_json (_: Json.value): OpamSolver.solution option =
+    assert false (* TODO! *)
+
+  let solution_to_json (_: OpamSolver.solution): Json.value =
+    assert false (* TODO! *)
+
+  let of_json (j: Json.t): t =
+    let cover_elt_of_json j =
+      try
+        let l = Json.get_dict j in
+        let get_opt = function Some x -> x | None -> raise Not_found in
+        Lib.{ solution =
+                solution_of_json (List.assoc "solution" l) |> get_opt;
+              useful =
+                OpamPackage.Set.of_json (List.assoc "useful" l) |> get_opt; }
+      with Not_found -> Json.parse_error `Null "" (* XX *)
+    in
+    Json.get_list cover_elt_of_json (Json.value j)
+
+  let to_json (cover: t): Json.t =
+    let cover_elt_to_json elt =
+      `O [ ("solution", solution_to_json elt.Lib.solution);
+           ("useful", OpamPackage.Set.to_json elt.Lib.useful) ]
+    in
+    Json.list cover_elt_to_json cover
 end
 
 module Cover_state = struct
@@ -54,17 +174,63 @@ module Cover_state = struct
   type element_id = int
 
   type t = {
-    timestamp : timestamp;
-    cover : Cover.t serialized;
-    report : report serialized;
-    cover_element_id : element_id serialized;
+    timestamp : timestamp Serialized.t;
+    cover : Cover.t Serialized.t;
+    report : report Serialized.t;
+    cover_element_id : element_id Serialized.t;
   }
 
-  let load ~dir:_ : t =
-    assert false
+  (* This assumes that the files already exist on the filesystem in a valid
+     state *)
+  let load ~dir : t =
+    let open OpamFilename in
+    let assoc k l =
+      try List.assoc k l with Not_found ->
+        Json.parse_error `Null "" (* XX *) in
+    let get_opt =
+      function Some x -> x | None -> Json.parse_error `Null "" (* XX *) in
+    let pkg_report_of_json j =
+      let l = Json.get_dict j in
+      let pkg = assoc "package" l in
+      let pkg_report = assoc "report" l in
+      (get_opt (OpamPackage.of_json pkg),
+       package_report_of_json pkg_report)
+    in
+    let element_report_of_json = Json.get_list pkg_report_of_json in
+    let report_of_json j =
+      try Json.get_list element_report_of_json (Json.value j) with
+        Json.Parse_error (_,_) ->
+        fatal "In %s: invalid format"
+          OpamFilename.(prettify Op.(dir // report_path)) in
+    let cover_element_id_of_json = function
+      | `O [ "id", `Float id ] -> truncate id
+      | _ -> fatal "In %s: invalid format (expected { \"id\" : ... })"
+               (OpamFilename.(prettify Op.(dir // cover_element_id_path)))
+    in
+    { timestamp = Serialized.load_raw ~file:Op.(dir // timestamp_path);
+      cover = Serialized.load_json ~file:Op.(dir // cover_path) Cover.of_json;
+      report =
+        Serialized.load_json ~file:Op.(dir // report_path) report_of_json;
+      cover_element_id =
+        Serialized.load_json ~file:Op.(dir // cover_element_id_path)
+          cover_element_id_of_json; }
 
-  let sync ~dir:_ _state : unit =
-    assert false
+  let sync state : unit =
+    let report_to_json r =
+      Json.list (fun elt ->
+        Json.list (fun (pkg, pkg_report) ->
+          `O [ ("package", OpamPackage.to_json pkg);
+               ("report", package_report_to_json pkg_report) ]
+        ) elt
+      ) r
+    in
+    let cover_element_id_to_json id =
+      `O [ "id", `Float (float id) ]
+    in
+    Serialized.sync_raw state.timestamp;
+    Serialized.sync_json state.cover Cover.to_json;
+    Serialized.sync_json state.report report_to_json;
+    Serialized.sync_json state.cover_element_id cover_element_id_to_json
 end
 
 module Switch_state = struct
@@ -87,7 +253,22 @@ module Work_state = struct
   module View_single = struct
     type t = Switch_state.t
     let load_or_create (compiler:package) ~workdir : t =
-      let _ = compiler, workdir in assert false
+      let open OpamFilename in
+      let switch_dir =
+        Op.(workdir / switches_path / OpamPackage.to_string compiler) in
+      mkdir switch_dir;
+      mkdir Op.(switch_dir / current_timestamp_path);
+      mkdir Op.(switch_dir / past_timestamps_path);
+      let current_timestamp =
+        Versioned.load_and_clean
+          ~repo:Op.(switch_dir / current_timestamp_path)
+          ~load:Cover_state.load
+      in
+      { path = switch_dir;
+        log = Op.(switch_dir // log_path);
+        current_timestamp;
+        past_timestamps = Op.(switch_dir / past_timestamps_path); }
+
     let sync ~workdir state =
       let _ = workdir, state in assert false
   end
@@ -104,7 +285,16 @@ module Work_state = struct
   end
 
   let load_or_create ~(view : workdir:dirname -> 'view) ~workdir : 'view t =
-    let _ = (view, workdir) in assert false
+    let open OpamFilename in
+    mkdir workdir;
+    (* workdir / opamroot_path will be created automatically by the opam
+       initialization code. *)
+    mkdir Op.(workdir / cache_path);
+    mkdir Op.(workdir / switches_path);
+    { opamroot = Op.(workdir / opamroot_path);
+      cache = Op.(workdir / cache_path);
+      switches = Op.(workdir / switches_path);
+      view = view ~workdir }
 
   let sync ~(view : workdir:dirname -> 'view -> unit) ~workdir : unit =
     let _ = (view, workdir) in assert false
@@ -176,11 +366,6 @@ let create_new_switch gt ~switch_name ~compiler =
 let remove_switch gt ~switch_name =
   OpamSwitchCommand.remove gt ~confirm:false switch_name
 
-(* Relatives to a timestamp directory *)
-let cover_path = OpamFilename.of_string "cover.json"
-let report_path = OpamFilename.of_string "report.json"
-let cover_element_id_path = OpamFilename.of_string "cover_element_build.id"
-
 let () =
   match Sys.argv |> Array.to_list |> List.tl with
   | "run" ::
@@ -198,17 +383,17 @@ let () =
 
     let compiler = match validate_compiler_variant compiler_variant with
       | None ->
-        Printf.eprintf "Invalid compiler variant: %s\n" compiler_variant;
+        fatal "Invalid compiler variant: %s\n" compiler_variant
         (* TODO: expand on what is accepted: ocaml-base-compiler.XXX or
            ocaml-variants.XXX *)
-        exit 1
       | Some pkg ->
         pkg
     in
+    assert (OpamPackage.to_string compiler = compiler_variant);
 
     let workdir = OpamFilename.Dir.of_string working_dir in
     let opamroot =
-      let root_dir = OpamFilename.Op.(workdir / "opamroot") in
+      let root_dir = OpamFilename.Op.(workdir / opamroot_path) in
       OpamStateConfig.opamroot ~root_dir ()
     in
 
@@ -223,7 +408,7 @@ let () =
       | false ->
         (* opam init *)
         log "Initializing a fresh opam root in %s..."
-          (OpamFilename.Dir.to_string opamroot);
+          (OpamFilename.prettify_dir opamroot);
         let init_config = OpamInitDefaults.init_config ~sandboxing:true () in
         let repo_url = Some repo_url in
         let repo =
@@ -252,7 +437,7 @@ let () =
         ()
       | true ->
         log "Found an existing opam root in %s"
-          (OpamFilename.Dir.to_string opamroot);
+          (OpamFilename.prettify_dir opamroot);
         (* TODO: If the commandline [repo] argument is not the same as the
            current opamroot repo, change the global repo url. *)
         log "Updating the repository...";
@@ -295,7 +480,10 @@ let () =
     let switch_state = work_state.view in
     let cover_state, switch_state =
       match switch_state.current_timestamp.head with
-      | Some c -> c, switch_state
+      | Some c ->
+        (* TODO: Is the cover_state timestamp matching the one of the repository?
+           If not: need to compute a new cover. *)
+        c, switch_state
       | None ->
         OpamGlobalState.with_ `Lock_none @@ fun gt ->
         OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
@@ -305,11 +493,16 @@ let () =
         in
         let selection = compute_package_selection u compiler pkgs_selection in
         let cover = Cover.compute u selection in
+        let repo_dir = switch_state.current_timestamp.git_repo in
+        let open OpamFilename in
         let cover_state = Cover_state.{
-          timestamp = get_repo_timestamp ();
-          cover = Cover.{ data = cover; path = cover_path };
-          report = Cover.{ data = []; path = report_path };
-          cover_element_id = Cover.{ data = 0; path = cover_element_id_path };
+          timestamp =
+            { data = get_repo_timestamp ();
+              path = Op.(repo_dir // timestamp_path) };
+          cover = { data = cover; path = Op.(repo_dir // cover_path) };
+          report = { data = []; path = Op.(repo_dir // report_path) };
+          cover_element_id =
+            { data = 0; path = Op.(repo_dir // cover_element_id_path) };
         } in
         let current_timestamp =
           { switch_state.current_timestamp with head = Some cover_state } in
@@ -328,14 +521,8 @@ let () =
         List.nth cover_state.cover.data
           cover_state.cover_element_id.data
       with Failure _ ->
-        Printf.eprintf "In %s: invalid id (out of bounds)\n"
-          (OpamFilename.Dir.to_string
-             (OpamFilename.(Op.(workdir /
-                                Dir.to_string work_state.switches /
-                                Dir.to_string switch_state.path /
-                                Dir.to_string switch_state.current_timestamp.git_repo /
-                                to_string cover_element_id_path))));
-        exit 1
+        fatal "In %s: invalid id (out of bounds)\n"
+          (OpamFilename.prettify cover_state.cover_element_id.path)
     in
     OpamGlobalState.with_ `Lock_none @@ fun gt ->
     OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
