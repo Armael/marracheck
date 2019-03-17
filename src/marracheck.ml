@@ -81,8 +81,7 @@ module Versioned = struct
     let open OpamProcess in
     let repo_s = OpamFilename.Dir.to_string st.git_repo in
     match st.head with
-    | None ->
-      Printf.eprintf "WARNING: Versioned.commit_new_head: nothing to commit\n"
+    | None -> assert false
     | Some data ->
       sync data;
       let msg = if msg = "" then "-" else msg in
@@ -386,6 +385,29 @@ let validate_compiler_variant s =
     then Some pkg
     else None
 
+let validate_repo_url url_s =
+  let url = OpamUrl.of_string url_s in
+  match url.transport with
+  | "file" ->
+    let dir = OpamFilename.Dir.of_string url.path in
+    if Sys.file_exists url.path
+    && Sys.is_directory url.path
+    && OpamGit.VCS.exists dir
+    && OpamProcess.Job.run (OpamGit.VCS.revision dir) <> None
+    then
+      Some url
+    else None
+  | _ -> None
+
+let get_repo_timestamp (repo_url: OpamUrl.t) =
+  let dir = OpamFilename.Dir.of_string repo_url.path in
+  match OpamProcess.Job.run (OpamGit.VCS.revision dir) with
+  | Some rev -> rev
+  | None ->
+    (* We assume repo_url has been validated, which ensures there is at least
+       one commit in the repo. *)
+    assert false
+
 let create_new_switch gt ~switch_name ~compiler =
   log "Creating a new switch %s..." (OpamSwitch.to_string switch_name);
   let (gt, sw) =
@@ -428,6 +450,12 @@ let () =
     in
     assert (OpamPackage.to_string compiler = compiler_variant);
 
+    let repo_url = match validate_repo_url repo_url with
+      | None ->
+        fatal "Repo url must be a local git clone of an opam-repository"
+      | Some url -> url
+    in
+
     let workdir = OpamFilename.Dir.of_string working_dir in
     let opamroot =
       let root_dir = OpamFilename.Op.(workdir / opamroot_path) in
@@ -447,21 +475,17 @@ let () =
         log "Initializing a fresh opam root in %s..."
           (OpamFilename.prettify_dir opamroot);
         let init_config = OpamInitDefaults.init_config ~sandboxing:true () in
-        let repo_url = Some repo_url in
         let repo =
-          repo_url |> OpamStd.Option.map (fun repo_url ->
-            let repo_name = OpamRepositoryName.default in
-            let repo_url = OpamUrl.parse (* ~repo_kind *) repo_url in
-            let repo_root =
-              OpamRepositoryPath.create opamroot repo_name in
-            { repo_root; repo_name; repo_url; repo_trust = None }
-          )
+          let repo_name = OpamRepositoryName.default in
+          let repo_root =
+            OpamRepositoryPath.create opamroot repo_name in
+          { repo_root; repo_name; repo_url; repo_trust = None }
         in
         let (_global_state, _repos_state, _system_compiler_formula) =
           OpamClient.init
             ~init_config
             ~interactive:false
-            ?repo
+            ~repo
             ~bypass_checks:false
             ?dot_profile:None
             ~update_config:false
@@ -534,7 +558,7 @@ let () =
         let open OpamFilename in
         let cover_state = Cover_state.{
           timestamp =
-            { data = get_repo_timestamp ();
+            { data = get_repo_timestamp repo_url;
               path = Op.(repo_dir // timestamp_path) };
           cover = { data = cover; path = Op.(repo_dir // cover_path) };
           report = { data = []; path = Op.(repo_dir // report_path) };
