@@ -3,6 +3,8 @@ open OpamTypes
 module ST = OpamStateTypes
 open Utils
 open State
+module File = OpamFilename
+module Dir = OpamFilename.Dir
 
 type package_selection = [
   | `All (* all installable packages for a given compiler *)
@@ -43,10 +45,10 @@ let compute_package_selection (u: universe) (compiler: package)
     assert false
 
 let validate_workdir working_dir =
-  let workdir = OpamFilename.Dir.of_string working_dir in
+  let workdir = Dir.of_string working_dir in
   mkdir workdir;
   if (OpamSystem.dir_is_empty working_dir) ||
-     (OpamFilename.exists_dir OpamFilename.Op.(workdir / opamroot_path))
+     (File.exists_dir File.Op.(workdir / opamroot_path))
   then Some workdir
   else None
 
@@ -65,7 +67,7 @@ let validate_repo_url url_s =
   let url = OpamUrl.of_string url_s in
   match url.transport with
   | "file" ->
-    let dir = OpamFilename.Dir.of_string url.path in
+    let dir = Dir.of_string url.path in
     if Sys.file_exists url.path
     && Sys.is_directory url.path
     && OpamGit.VCS.exists dir
@@ -75,7 +77,7 @@ let validate_repo_url url_s =
   | _ -> None
 
 let get_repo_timestamp (repo_url: OpamUrl.t) =
-  let dir = OpamFilename.Dir.of_string repo_url.path in
+  let dir = Dir.of_string repo_url.path in
   match OpamProcess.Job.run (OpamGit.VCS.revision dir) with
   | Some rev -> rev
   | None ->
@@ -99,6 +101,22 @@ let create_new_switch gt ~switch_name ~compiler =
 
 let remove_switch gt ~switch_name =
   OpamSwitchCommand.remove gt ~confirm:false switch_name
+
+let retire_current_timestamp
+    ~(current_timestamp : Cover_state.t Versioned.t)
+    ~(past_timestamps : dirname)
+  =
+  match current_timestamp.Versioned.head with
+  | None ->
+    (* We could probably also also do nothing ... *)
+    assert false
+  | Some cover_state ->
+    let timestamp_s = cover_state.Cover_state.timestamp.data in
+    let cur_basename =
+      File.Base.to_string (File.basename_dir current_timestamp.git_repo) in
+    mv
+      current_timestamp.git_repo
+      File.Op.(past_timestamps / (cur_basename ^ "_" ^ timestamp_s))
 
 let () =
   match Sys.argv |> Array.to_list |> List.tl with
@@ -215,11 +233,16 @@ let () =
       Work_state.load_or_create ~view ~workdir in
     let switch_state = work_state.view in
     let cover_state, switch_state =
+      let repo_timestamp = get_repo_timestamp repo_url in
       match switch_state.current_timestamp.head with
-      | Some c ->
-        (* TODO: Is the cover_state timestamp matching the one of the repository?
-           If not: need to compute a new cover. *)
-        c, switch_state
+      | Some cover_state ->
+        (* Is the cover_state timestamp matching the one of the repository?
+           If not, we need to retire the current_timestamp directory, and
+           create a new one after computing a new cover *)
+
+        (* TODO *)
+
+        cover_state, switch_state
       | None ->
         OpamGlobalState.with_ `Lock_none @@ fun gt ->
         OpamSwitchState.with_ `Lock_read gt @@ fun sw ->

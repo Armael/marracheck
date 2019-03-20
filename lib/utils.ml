@@ -12,6 +12,11 @@ let mkdir dir =
     fatal "Error: %s already exists but is not a directory" dir
   else OpamSystem.mkdir dir
 
+let mv dir1 dir2 =
+  let dir1 = OpamFilename.Dir.to_string dir1 in
+  let dir2 = OpamFilename.Dir.to_string dir2 in
+  OpamSystem.mv dir1 dir2
+
 let read_json (file: filename): Json.t =
   let cin = open_in (OpamFilename.to_string file) in
   let res =
