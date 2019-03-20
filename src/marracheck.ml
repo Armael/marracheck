@@ -145,9 +145,7 @@ let () =
         let init_config = OpamInitDefaults.init_config ~sandboxing:true () in
         let repo =
           let repo_name = OpamRepositoryName.default in
-          let repo_root =
-            OpamRepositoryPath.create opamroot repo_name in
-          { repo_root; repo_name; repo_url; repo_trust = None }
+          { repo_name; repo_url; repo_trust = None }
         in
         let (_global_state, _repos_state, _system_compiler_formula) =
           OpamClient.init
@@ -184,13 +182,14 @@ let () =
 
     let switch_name = OpamSwitch.of_string compiler_variant in
     OpamGlobalState.with_ `Lock_write @@ begin fun gt ->
+    OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
       let (gt, sw) =
         if OpamGlobalState.switch_exists gt switch_name then begin
           log "Existing opam switch %s found" compiler_variant;
           (* TODO: check that the switch repositories are what we expect
              (just our repository) (unlikely to not be the case) *)
           let sw =
-            OpamSwitchAction.set_current_switch `Lock_none gt switch_name in
+            OpamSwitchAction.set_current_switch `Lock_none gt ~rt switch_name in
           if OpamSwitchState.repos_list sw <> [OpamRepositoryName.default] then
             fatal "Switch %s: unexpected list of repositories (expected [%s])"
               (OpamSwitch.to_string switch_name)
@@ -203,6 +202,7 @@ let () =
         end
       in
       ignore (gt : ST.unlocked ST.global_state);
+      ignore (rt : ST.unlocked ST.repos_state);
       ignore (sw : ST.unlocked ST.switch_state);
     end;
 
@@ -214,7 +214,7 @@ let () =
       let view = Work_state.View_single.load_or_create compiler in
       Work_state.load_or_create ~view ~workdir in
     let switch_state = work_state.view in
-    let cover_state, switch_state =
+    let cover_state, _switch_state =
       match switch_state.current_timestamp.head with
       | Some c ->
         (* TODO: Is the cover_state timestamp matching the one of the repository?
@@ -266,16 +266,17 @@ let () =
     let reinstall_switch =
       not (OpamPackage.Set.subset sw.installed (Lib.installable cover_elt))
     in
-    let sw, gt =
+    let _sw, _gt =
       if reinstall_switch then begin
         log "Unwanted packages are currently installed; re-creating the switch...";
         let sw, gt =
           OpamGlobalState.with_write_lock gt @@ fun gt ->
+          OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
           let gt = remove_switch gt ~switch_name in
           let gt, sw = create_new_switch gt ~switch_name ~compiler in
           ignore (OpamSwitchState.unlock sw);
           OpamGlobalState.with_write_lock gt @@ fun gt ->
-          OpamSwitchAction.set_current_switch `Lock_none gt switch_name, gt in
+          OpamSwitchAction.set_current_switch `Lock_none gt ~rt switch_name, gt in
         OpamSwitchState.unlock sw, OpamGlobalState.unlock gt
       end else
         sw, gt

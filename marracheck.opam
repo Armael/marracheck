@@ -27,12 +27,12 @@ depends: [
   "z3"
 ]
 pin-depends: [
-  ["opam-client.2.0.3" "git+https://github.com/Armael/opam#marracheck"]
-  ["opam-core.2.0.3" "git+https://github.com/Armael/opam#marracheck"]
-  ["opam-format.2.0.3" "git+https://github.com/Armael/opam#marracheck"]
-  ["opam-repository.2.0.3" "git+https://github.com/Armael/opam#marracheck"]
-  ["opam-solver.2.0.3" "git+https://github.com/Armael/opam#marracheck"]
-  ["opam-state.2.0.3" "git+https://github.com/Armael/opam#marracheck"]
+  ["opam-client.2.0.0" "git+https://github.com/Armael/opam#marracheck"]
+  ["opam-core.2.0.0" "git+https://github.com/Armael/opam#marracheck"]
+  ["opam-format.2.0.0" "git+https://github.com/Armael/opam#marracheck"]
+  ["opam-repository.2.0.0" "git+https://github.com/Armael/opam#marracheck"]
+  ["opam-solver.2.0.0" "git+https://github.com/Armael/opam#marracheck"]
+  ["opam-state.2.0.0" "git+https://github.com/Armael/opam#marracheck"]
 ]
 synopsis: "Gotta check them all!"
 description: """

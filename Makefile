@@ -9,3 +9,6 @@ top:
 
 test: all
 	_build/default/src/compute_cover.exe
+
+clean:
+	dune clean

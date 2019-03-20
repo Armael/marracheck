@@ -149,19 +149,14 @@ module Cover = struct
        [compute_package_selection]). *)
     cover
 
-  let solution_of_json (_: Json.value): OpamSolver.solution option =
-    assert false (* TODO! *)
-
-  let solution_to_json (_: OpamSolver.solution): Json.value =
-    assert false (* TODO! *)
-
   let of_json (j: Json.t): t =
     let cover_elt_of_json j =
       try
         let l = Json.get_dict j in
         let get_opt = function Some x -> x | None -> raise Not_found in
         Lib.{ solution =
-                solution_of_json (List.assoc "solution" l) |> get_opt;
+                OpamSolver.solution_of_json (List.assoc "solution" l)
+                |> get_opt;
               useful =
                 OpamPackage.Set.of_json (List.assoc "useful" l) |> get_opt; }
       with Not_found -> Json.parse_error `Null "" (* XX *)
@@ -170,7 +165,7 @@ module Cover = struct
 
   let to_json (cover: t): Json.t =
     let cover_elt_to_json elt =
-      `O [ ("solution", solution_to_json elt.Lib.solution);
+      `O [ ("solution", OpamSolver.solution_to_json elt.Lib.solution);
            ("useful", OpamPackage.Set.to_json elt.Lib.useful) ]
     in
     Json.list cover_elt_to_json cover
