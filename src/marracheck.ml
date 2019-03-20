@@ -12,6 +12,26 @@ type package_selection = [
   | `List of package list
 ]
 
+let init_opam_root ~repo_url =
+  let init_config = OpamInitDefaults.init_config ~sandboxing:true () in
+  let repo =
+    let repo_name = OpamRepositoryName.default in
+    { repo_name; repo_url; repo_trust = None }
+  in
+  let (_global_state, _repos_state, _system_compiler_formula) =
+    OpamClient.init
+      ~init_config
+      ~interactive:false
+      ~repo
+      ~bypass_checks:false
+      ?dot_profile:None
+      ~update_config:false
+      ~env_hook:false
+      ~completion:false
+      (OpamStd.Sys.guess_shell_compat ()) in
+  (* TODO: setup the binary cache script *)
+  ()
+
 let installable_with_compiler (u: universe) (compiler: package) =
   (* The universe comes from a switch in an unknown state, but with the correct
      repository.
@@ -148,6 +168,8 @@ let () =
       OpamStateConfig.opamroot ~root_dir ()
     in
 
+    (* Setup the opam-related global state *)
+
     OpamClientConfig.opam_init
       ~solver:(lazy (module OpamZ3))
       ~best_effort:false
@@ -155,46 +177,43 @@ let () =
       ~no_env_notice:true
       ();
 
+    (* Is there anything in the opamroot? *)
+
     begin match OpamFile.exists (OpamPath.config opamroot) with
       | false ->
-        (* opam init *)
+        (* No: do "opam init" *)
         log "Initializing a fresh opam root in %s..."
           (OpamFilename.prettify_dir opamroot);
-        let init_config = OpamInitDefaults.init_config ~sandboxing:true () in
-        let repo =
-          let repo_name = OpamRepositoryName.default in
-          { repo_name; repo_url; repo_trust = None }
-        in
-        let (_global_state, _repos_state, _system_compiler_formula) =
-          OpamClient.init
-            ~init_config
-            ~interactive:false
-            ~repo
-            ~bypass_checks:false
-            ?dot_profile:None
-            ~update_config:false
-            ~env_hook:false
-            ~completion:false
-            (OpamStd.Sys.guess_shell_compat ())
-        in
-        (* TODO: setup the binary cache script *)
-        log "Done initializing a fresh opam root";
-        ()
+        init_opam_root ~repo_url;
+        log "Done initializing a fresh opam root"
       | true ->
+        (* Yes: do "opam update" *)
         log "Found an existing opam root in %s"
           (OpamFilename.prettify_dir opamroot);
-        (* TODO: If the commandline [repo] argument is not the same as the
+        (* If the commandline [repo] argument is not the same as the
            current opamroot repo, change the global repo url. *)
+        begin
+          OpamGlobalState.with_ `Lock_none @@ fun gt ->
+          OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+          let opamroot_repo =
+            OpamRepositoryState.get_repo rt OpamRepositoryName.default in
+          if opamroot_repo.repo_url <> repo_url then begin
+            log "Existing repo url is different from the one \
+                 provided by the user: updating it";
+            OpamRepositoryState.with_write_lock rt @@ fun rt ->
+            let rt =
+              OpamRepositoryCommand.set_url rt
+                OpamRepositoryName.default repo_url None in
+            OpamRepositoryState.write_config rt;
+            (), rt
+          end |> fun ((), rt) -> OpamRepositoryState.drop rt
+        end;
         log "Updating the repository...";
         OpamGlobalState.with_ `Lock_write @@ begin fun gt ->
-        let success, _changed, _rt =
-          OpamClient.update gt
-            ~repos_only:true
-            ~dev_only:false
-            []
-        in
-        if not success then OpamStd.Sys.exit_because `Sync_error;
-        log "Done updating the repository."
+          let success, _changed, _rt =
+            OpamClient.update gt ~repos_only:true ~dev_only:false [] in
+          if not success then OpamStd.Sys.exit_because `Sync_error;
+          log "Done updating the repository."
         end
     end;
 
