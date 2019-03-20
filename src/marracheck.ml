@@ -217,14 +217,31 @@ let () =
         end
     end;
 
+    (* We now have an initialized opamroot with an updated repository *)
+
     let switch_name = OpamSwitch.of_string compiler_variant in
-    OpamGlobalState.with_ `Lock_write @@ begin fun gt ->
-    OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+    begin
+      OpamGlobalState.with_ `Lock_write @@ fun gt ->
+      OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
       let (gt, sw) =
         if OpamGlobalState.switch_exists gt switch_name then begin
           log "Existing opam switch %s found" compiler_variant;
-          (* TODO: check that the switch repositories are what we expect
-             (just our repository) (unlikely to not be the case) *)
+          (* Check that the switch repositories are what we expect
+             (just our repository)
+             (this is a sanity check; it is very most likely the case) *)
+          begin
+            OpamSwitchState.with_ `Lock_none gt ~switch:switch_name @@ fun sw ->
+            let global_repos = OpamGlobalState.repos_list gt in
+            let sw_repos = OpamSwitchState.repos_list sw in
+            let sw_repos = if sw_repos = [] then (
+                log "WARN? Switch has no repos; using the global list of repos";
+                global_repos
+              ) else sw_repos in
+            if sw_repos <> [OpamRepositoryName.default] then
+              fatal "The existing switch has unexpected repositories \
+                     (expected only \"%s\")"
+                OpamRepositoryName.(to_string default)
+          end;
           let sw =
             OpamSwitchAction.set_current_switch `Lock_none gt ~rt switch_name in
           if OpamSwitchState.repos_list sw <> [OpamRepositoryName.default] then
