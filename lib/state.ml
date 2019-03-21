@@ -172,8 +172,7 @@ module Cover = struct
 end
 
 module Cover_state = struct
-  type element_report = (OpamPackage.t * package_report) list
-  type report = element_report list
+  type report = (OpamPackage.t * package_report) list
   type element_id = int
 
   type t = {
@@ -207,9 +206,8 @@ module Cover_state = struct
       (get_opt (OpamPackage.of_json pkg),
        package_report_of_json pkg_report)
     in
-    let element_report_of_json = Json.get_list pkg_report_of_json in
     let report_of_json j =
-      try Json.get_list element_report_of_json (Json.value j) with
+      try Json.get_list pkg_report_of_json (Json.value j) with
         Json.Parse_error (_,_) ->
         fatal "In %s: invalid format"
           OpamFilename.(prettify Op.(dir // report_path)) in
@@ -228,11 +226,9 @@ module Cover_state = struct
 
   let sync state : unit =
     let report_to_json r =
-      Json.list (fun elt ->
-        Json.list (fun (pkg, pkg_report) ->
+      Json.list (fun (pkg, pkg_report) ->
           `O [ ("package", OpamPackage.to_json pkg);
                ("report", package_report_to_json pkg_report) ]
-        ) elt
       ) r
     in
     let cover_element_id_to_json id =
