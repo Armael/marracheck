@@ -380,21 +380,18 @@ let () =
     let reinstall_switch =
       not (OpamPackage.Set.subset sw.installed (Lib.installable cover_elt))
     in
-    let sw, gt =
-      if reinstall_switch then begin
-        log "Unwanted packages are currently installed; re-creating the switch...";
-        let sw, gt =
-          OpamGlobalState.with_write_lock gt @@ fun gt ->
-          OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-          let gt = remove_switch gt ~switch_name in
-          let gt, sw = create_new_switch gt ~switch_name ~compiler in
-          OpamSwitchState.drop sw;
-          OpamGlobalState.with_write_lock gt @@ fun gt ->
-          OpamSwitchAction.set_current_switch `Lock_none gt ~rt switch_name, gt in
-        OpamSwitchState.unlock sw, OpamGlobalState.unlock gt
-      end else
-        sw, gt
-    in
+    if reinstall_switch then begin
+      log "Unwanted packages are currently installed; re-creating the switch...";
+      let sw, gt =
+        OpamGlobalState.with_write_lock gt @@ fun gt ->
+        OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+        let gt = remove_switch gt ~switch_name in
+        let gt, sw = create_new_switch gt ~switch_name ~compiler in
+        OpamSwitchState.drop sw;
+        OpamGlobalState.with_write_lock gt @@ fun gt ->
+        OpamSwitchAction.set_current_switch `Lock_none gt ~rt switch_name, gt in
+      OpamSwitchState.drop sw; OpamGlobalState.drop gt
+    end;
 
     (* The cover element can now be built in the current opam switch *)
 
