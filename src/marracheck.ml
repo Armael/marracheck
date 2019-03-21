@@ -138,6 +138,14 @@ let retire_current_timestamp
       current_timestamp.git_repo
       File.Op.(past_timestamps / (cur_basename ^ "_" ^ timestamp_s))
 
+let compute_cover_of_selection ~compiler ~sw selection =
+  let u = OpamSwitchState.universe sw
+      ~requested:OpamPackage.Name.Set.empty
+      OpamTypes.Query (* for historical reasons; should not matter *)
+  in
+  let pkgs = compute_package_selection u compiler selection in
+  Cover.compute u pkgs
+
 let () =
   match Sys.argv |> Array.to_list |> List.tl with
   | "run" ::
@@ -275,30 +283,45 @@ let () =
         (* Is the cover_state timestamp matching the one of the repository?
            If not, we need to retire the current_timestamp directory, and
            create a new one after computing a new cover *)
+        if repo_timestamp <> cover_state.timestamp.data then begin
+          retire_current_timestamp
+            ~current_timestamp:switch_state.current_timestamp
+            ~past_timestamps:switch_state.past_timestamps;
+          let current_timestamp =
+            Versioned.load_and_clean
+              ~repo:switch_state.current_timestamp.git_repo
+              ~load:Cover_state.load in
+          let cover =
+            OpamGlobalState.with_ `Lock_none @@ fun gt ->
+            OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
+            compute_cover_of_selection ~sw ~compiler pkgs_selection in
+          let cover_state = Cover_state.create
+              ~dir:switch_state.current_timestamp.git_repo
+              ~timestamp:repo_timestamp ~cover in
+          let current_timestamp =
+            { current_timestamp with head = Some cover_state } in
+          Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
+            "Initial cover";
+          cover_state, { switch_state with current_timestamp }
+        end else begin
+          (* TODO: Is this cover compatible with the package selection we are
+             using currently?
 
-        (* TODO *)
+             That is, [packages already built (from report)] union [packages in
+             the cover] = packages selection?
 
-        cover_state, switch_state
+             If not, compute a new cover (without recomputing things in report).
+          *)
+          cover_state, switch_state
+        end
       | None ->
-        OpamGlobalState.with_ `Lock_none @@ fun gt ->
-        OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
-        let u = OpamSwitchState.universe sw
-            ~requested:OpamPackage.Name.Set.empty
-            OpamTypes.Query (* for historical reasons; should not matter *)
-        in
-        let selection = compute_package_selection u compiler pkgs_selection in
-        let cover = Cover.compute u selection in
-        let repo_dir = switch_state.current_timestamp.git_repo in
-        let open OpamFilename in
-        let cover_state = Cover_state.{
-          timestamp =
-            { data = get_repo_timestamp repo_url;
-              path = Op.(repo_dir // timestamp_path) };
-          cover = { data = cover; path = Op.(repo_dir // cover_path) };
-          report = { data = []; path = Op.(repo_dir // report_path) };
-          cover_element_id =
-            { data = 0; path = Op.(repo_dir // cover_element_id_path) };
-        } in
+        let cover =
+          OpamGlobalState.with_ `Lock_none @@ fun gt ->
+          OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
+          compute_cover_of_selection ~sw ~compiler pkgs_selection in
+        let cover_state = Cover_state.create
+            ~dir:switch_state.current_timestamp.git_repo
+            ~timestamp:repo_timestamp ~cover in
         let current_timestamp =
           { switch_state.current_timestamp with head = Some cover_state } in
         Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp

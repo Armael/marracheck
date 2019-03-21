@@ -183,6 +183,14 @@ module Cover_state = struct
     cover_element_id : element_id Serialized.t;
   }
 
+  let create ~dir ~timestamp ~cover =
+    let open OpamFilename in
+    { timestamp = { data = timestamp; path = Op.(dir // timestamp_path) };
+      cover = { data = cover; path = Op.(dir // cover_path) };
+      report = { data = []; path = Op.(dir // report_path) };
+      cover_element_id = { data = 0; path = Op.(dir // cover_element_id_path) };
+    }
+
   (* This assumes that the files already exist on the filesystem in a valid
      state *)
   let load ~dir : t =
