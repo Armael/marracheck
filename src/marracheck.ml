@@ -64,6 +64,10 @@ let compute_package_selection (u: universe) (compiler: package)
   | `Revdeps _ | `List _ ->
     assert false
 
+let universe ~sw =
+  OpamSwitchState.universe sw ~requested:OpamPackage.Name.Set.empty
+    OpamTypes.Query (* for historical reasons; should not matter *)
+
 let validate_workdir working_dir =
   let workdir = Dir.of_string working_dir in
   mkdir workdir;
@@ -139,10 +143,7 @@ let retire_current_timestamp
       File.Op.(past_timestamps / (cur_basename ^ "_" ^ timestamp_s))
 
 let compute_cover_of_selection ~compiler ~sw selection =
-  let u = OpamSwitchState.universe sw
-      ~requested:OpamPackage.Name.Set.empty
-      OpamTypes.Query (* for historical reasons; should not matter *)
-  in
+  let u = universe ~sw in
   let pkgs = compute_package_selection u compiler selection in
   Cover.compute u pkgs
 
@@ -304,15 +305,47 @@ let () =
             "Initial cover";
           cover_state, { switch_state with current_timestamp }
         end else begin
-          (* TODO: Is this cover compatible with the package selection we are
-             using currently?
+          (* Is this cover compatible with the package selection we are using
+             currently?
 
-             That is, [packages already built (from report)] union [packages in
-             the cover] = packages selection?
+             That is, ["useful" packages of the cover] = packages selection?
 
-             If not, compute a new cover (without recomputing things in report).
-          *)
-          cover_state, switch_state
+             If not, compute a new cover (without the packages of the selection
+             that we already built, in this cover or even before). *)
+          let current_selection =
+            OpamGlobalState.with_ `Lock_none @@ fun gt ->
+            OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
+            compute_package_selection (universe ~sw) compiler pkgs_selection in
+          let already_built =
+            List.map fst cover_state.report.data
+            |> OpamPackage.Set.of_list in
+          let cover_state_to_build =
+            CCList.drop cover_state.cover_element_id.data
+              cover_state.cover.data
+            |> List.map (fun elt -> elt.Lib.useful)
+            |> List.fold_left OpamPackage.Set.union OpamPackage.Set.empty
+          in
+          let selection_to_build =
+            OpamPackage.Set.diff current_selection already_built in
+          if OpamPackage.Set.equal selection_to_build cover_state_to_build then
+            cover_state, switch_state
+          else
+            (* Recompute a cover for the remaining packages of the selection to
+               build *)
+            let cover =
+              OpamGlobalState.with_ `Lock_none @@ fun gt ->
+              OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
+              Cover.compute (universe ~sw) selection_to_build in
+            let cover_state = {
+              cover_state with
+              cover = { cover_state.cover with data = cover };
+              cover_element_id = { cover_state.cover_element_id with data = 0 }
+            } in
+            let current_timestamp =
+              { switch_state.current_timestamp with head = Some cover_state } in
+            Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
+              "New packages selection: compute a new cover";
+            cover_state, { switch_state with current_timestamp }
         end
       | None ->
         let cover =
@@ -329,8 +362,7 @@ let () =
         cover_state, { switch_state with current_timestamp }
     in
 
-    (* A cover_state has been fetched, or a fresh one was created if there was
-       none. *)
+    (* An adequate cover_state has been fetched or created. *)
 
     (* Are the packages currently installed in the opam switch compatible with
        the current cover_state? (are they included in the current cover
