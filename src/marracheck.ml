@@ -12,8 +12,54 @@ type package_selection = [
   | `List of package list
 ]
 
-let init_opam_root ~repo_url =
+let init_opam_root ~workdir ~opamroot ~repo_url =
   let init_config = OpamInitDefaults.init_config ~sandboxing:true () in
+  (* Setup the hooks for the binary cache script *)
+  let wrap cmds (hook_cmd, hook_filter) =
+    let fand fopt f = match fopt with
+      | None -> f
+      | Some f' -> FAnd (f', f)
+    in
+    CCList.flat_map (fun (cmd, filter) ->
+      match hook_filter with
+      | None -> [(hook_cmd @ cmd, filter)]
+      | Some hook_filter ->
+        [hook_cmd @ cmd, Some (fand filter hook_filter);
+         cmd, Some (fand filter (FNot hook_filter))]
+    ) cmds
+  in
+  let s x = CString x, None in
+  let i x = CIdent x, None in
+  let script = s "%{hooks}%/opam-bin-cache.sh" in
+  (* TODO: check if these two filters are correct. This is copy-paste from
+     opamInitDefaults.ml, I have no idea what I'm doing. *)
+  let build_id_isdef =
+    FDefined (FIdent ([], OpamVariable.of_string "build-id", None)) in
+  let error_code_iszero =
+    FOp (FIdent ([], OpamVariable.of_string "error-code", None),
+         `Eq, FString "0") in
+  let w = OpamFile.InitConfig.wrappers init_config in
+  (* This should reflect the "Use as" instructions at the end of the binary
+     cache script (see cache_script.ml) *)
+  let w =
+    let open OpamFile.Wrappers in
+    { w with
+      pre_install =
+        wrap w.pre_install
+          ([ script; s "restore"; i "build-id"; i "name" ],
+           Some build_id_isdef);
+      wrap_build =
+        wrap w.wrap_build
+          ([ script; s "wrap"; i "build-id" ], Some build_id_isdef);
+      wrap_install =
+        wrap w.wrap_install
+          ([ script; s "wrap"; i "build-id" ], Some build_id_isdef);
+      post_install =
+        wrap w.post_install
+          ([ script; s "store"; i "build-id"; i "installed-files" ],
+           Some (FAnd (build_id_isdef, error_code_iszero)));
+    } in
+  let init_config = OpamFile.InitConfig.with_wrappers w init_config in
   let repo =
     let repo_name = OpamRepositoryName.default in
     { repo_name; repo_url; repo_trust = None }
@@ -29,7 +75,10 @@ let init_opam_root ~repo_url =
       ~env_hook:false
       ~completion:false
       (OpamStd.Sys.guess_shell_compat ()) in
-  (* TODO: setup the binary cache script *)
+  (* Write the binary cache script on disk *)
+  OpamSystem.write
+    File.(to_string Op.(OpamPath.hooks_dir opamroot // Cache_script.name))
+    (Cache_script.script ~workdir);
   ()
 
 let installable_with_compiler (u: universe) (compiler: package) =
@@ -193,7 +242,7 @@ let () =
         (* No: do "opam init" *)
         log "Initializing a fresh opam root in %s..."
           (OpamFilename.prettify_dir opamroot);
-        init_opam_root ~repo_url;
+        init_opam_root ~workdir ~opamroot ~repo_url;
         log "Done initializing a fresh opam root"
       | true ->
         (* Yes: do "opam update" *)
