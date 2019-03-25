@@ -144,6 +144,7 @@ module Cover = struct
 
   let compute (u : universe) (selection : OpamPackage.Set.t) : t =
     let (cover, remain) = Lib.compute_cover u selection in
+    assert (cover <> []);
     assert (remain = Ok ());
     (* [selection] must only contain installable packages (see
        [compute_package_selection]). *)
