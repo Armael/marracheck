@@ -444,6 +444,20 @@ let () =
 
     (* The cover element can now be built in the current opam switch *)
 
+    let build_result =
+      OpamGlobalState.with_ `Lock_none @@ fun gs ->
+      OpamSwitchState.with_ `Lock_write gs @@ fun sw ->
+      let (sw, res) =
+        OpamSolution.apply sw
+          ~ask:false
+          ~requested:OpamPackage.Name.Set.empty
+          ~assume_built:false
+          cover_elt.Lib.solution
+      in
+      OpamSwitchState.drop sw;
+      res
+    in
+
     ()
 
   | "cache" :: _ ->
