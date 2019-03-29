@@ -96,6 +96,9 @@ type package_report =
   | Success of { log : build_log; changes : changes }
   | Error of { log : build_log; cause : error_cause }
   | Aborted of { deps : OpamPackage.Set.t }
+  (* An [Aborted] status means that the package could not be built
+     because _for all possible ways of building the package_
+     at least one of its dependencies fails to build. *)
 
 let package_report_of_json (j: Json.value): package_report =
   let l = Json.get_dict j in

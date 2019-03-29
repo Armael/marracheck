@@ -374,12 +374,7 @@ let () =
             OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
             compute_package_selection (universe ~sw) compiler pkgs_selection in
           let already_built =
-            cover_state.report.data
-            |> CCList.filter_map (fun (pkg, report) ->
-              match report with
-              | Success _ | Error _ -> Some pkg
-              | Aborted _ -> None
-            )
+            List.map fst cover_state.report.data
             |> OpamPackage.Set.of_list in
           let cover_state_to_build =
             CCList.drop cover_state.cover_element_id.data
