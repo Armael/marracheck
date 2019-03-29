@@ -175,6 +175,14 @@ let create_new_switch gt ~switch_name ~compiler =
 let remove_switch gt ~switch_name =
   OpamSwitchCommand.remove gt ~confirm:false switch_name
 
+let recreate_switch gt ~switch_name ~compiler =
+  OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+  let gt = remove_switch gt ~switch_name in
+  let gt, sw = create_new_switch gt ~switch_name ~compiler in
+  OpamSwitchState.drop sw;
+  OpamGlobalState.with_write_lock gt @@ fun gt ->
+  OpamSwitchAction.set_current_switch `Lock_none gt ~rt switch_name, gt
+
 let retire_current_timestamp
     ~(current_timestamp : Cover_state.t Versioned.t)
     ~(past_timestamps : dirname)
@@ -366,7 +374,12 @@ let () =
             OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
             compute_package_selection (universe ~sw) compiler pkgs_selection in
           let already_built =
-            List.map fst cover_state.report.data
+            cover_state.report.data
+            |> CCList.filter_map (fun (pkg, report) ->
+              match report with
+              | Success _ | Error _ -> Some pkg
+              | Aborted _ -> None
+            )
             |> OpamPackage.Set.of_list in
           let cover_state_to_build =
             CCList.drop cover_state.cover_element_id.data
@@ -433,12 +446,7 @@ let () =
       log "Unwanted packages are currently installed; re-creating the switch...";
       let sw, gt =
         OpamGlobalState.with_write_lock gt @@ fun gt ->
-        OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-        let gt = remove_switch gt ~switch_name in
-        let gt, sw = create_new_switch gt ~switch_name ~compiler in
-        OpamSwitchState.drop sw;
-        OpamGlobalState.with_write_lock gt @@ fun gt ->
-        OpamSwitchAction.set_current_switch `Lock_none gt ~rt switch_name, gt in
+        recreate_switch gt ~switch_name ~compiler in
       OpamSwitchState.drop sw; OpamGlobalState.drop gt
     end;
 
