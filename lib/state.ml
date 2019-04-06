@@ -143,14 +143,26 @@ let package_report_to_json = function
          ("deps", OpamPackage.Set.to_json deps) ]
 
 module Cover = struct
+  (* Always a non-empty list.
+
+     The empty cover is represented by a single empty cover_elt
+     (satisfying [Lib.cover_elt_is_empty]).
+  *)
   type t = Lib.cover_elt list
+
+  let is_empty = function
+    | [] -> assert false
+    | [elt] -> Lib.cover_elt_is_empty elt
+    | _ :: _ -> false
 
   let compute (u : universe) (selection : OpamPackage.Set.t) : t =
     let (cover, remain) = Lib.compute_cover u selection in
     assert (cover <> []);
-    assert (remain = Ok ());
     (* [selection] must only contain installable packages (see
        [compute_package_selection]). *)
+    assert (remain = Ok ());
+    if OpamPackage.Set.is_empty selection then
+      assert (is_empty cover);
     cover
 
   let of_json (j: Json.t): t =

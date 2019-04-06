@@ -334,7 +334,7 @@ let () =
       let view = Work_state.View_single.load_or_create compiler in
       Work_state.load_or_create ~view ~workdir in
     let switch_state = work_state.view in
-    let cover_state, switch_state =
+    let current_timestamp : Cover_state.t Versioned.t =
       let repo_timestamp = get_repo_timestamp repo_url in
       match switch_state.current_timestamp.head with
       | Some cover_state ->
@@ -360,7 +360,7 @@ let () =
             { current_timestamp with head = Some cover_state } in
           Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
             "Initial cover";
-          cover_state, { switch_state with current_timestamp }
+          current_timestamp
         end else begin
           (* Is this cover compatible with the package selection we are using
              currently?
@@ -369,6 +369,16 @@ let () =
 
              If not, compute a new cover (without the packages of the selection
              that we already built, in this cover or even before). *)
+
+          (* FIXME: this branch of the code is doing something that is
+             correct but not consistent with the rest of the code: it is
+             trimming the selection to remove packages that appear in the
+             report (so have already been built (or failed to build)).
+
+             This sounds like a good thing to do in general. But then we should
+             do that in the other cases as well. And log to the user what is
+             happening.
+          *)
           let current_selection =
             OpamGlobalState.with_ `Lock_none @@ fun gt ->
             OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
@@ -385,7 +395,7 @@ let () =
           let selection_to_build =
             OpamPackage.Set.diff current_selection already_built in
           if OpamPackage.Set.equal selection_to_build cover_state_to_build then
-            cover_state, switch_state
+            switch_state.current_timestamp
           else
             (* Recompute a cover for the remaining packages of the selection to
                build *)
@@ -402,9 +412,10 @@ let () =
               { switch_state.current_timestamp with head = Some cover_state } in
             Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
               "New packages selection: compute a new cover";
-            cover_state, { switch_state with current_timestamp }
+            current_timestamp
         end
       | None ->
+        (* There is no pre-existing cover. Compute a fresh one. *)
         let cover =
           OpamGlobalState.with_ `Lock_none @@ fun gt ->
           OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
@@ -416,49 +427,87 @@ let () =
           { switch_state.current_timestamp with head = Some cover_state } in
         Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
           "Initial cover";
-        cover_state, { switch_state with current_timestamp }
+        current_timestamp
     in
 
     (* An adequate cover_state has been fetched or created. *)
 
-    (* Are the packages currently installed in the opam switch compatible with
-       the current cover_state? (are they included in the current cover
-       element?) *)
-    let cover_elt =
-      try
-        List.nth cover_state.cover.data
-          cover_state.cover_element_id.data
-      with Failure _ ->
-        fatal "In %s: invalid id (out of bounds)\n"
-          (OpamFilename.prettify cover_state.cover_element_id.path)
-    in
-    OpamGlobalState.with_ `Lock_none @@ fun gt ->
-    OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
-    let reinstall_switch =
-      not (OpamPackage.Set.subset sw.installed (Lib.installable cover_elt))
-    in
-    if reinstall_switch then begin
-      log "Unwanted packages are currently installed; re-creating the switch...";
-      let sw, gt =
-        OpamGlobalState.with_write_lock gt @@ fun gt ->
-        recreate_switch gt ~switch_name ~compiler in
-      OpamSwitchState.drop sw; OpamGlobalState.drop gt
-    end;
+    (* Build loop: builds all elements a cover (possibly recomputing it whenever
+       broken packages are found)
 
-    (* The cover element can now be built in the current opam switch *)
+       Loop invariant:
+       - everything other than the opam switch and the cover state stays the
+         same (in particular, the current timestamp stays the same)
+       - the opam switch can contain some already installed packages
+       - there is a valid cover_state which contains the current cover to build
+    *)
 
-    let build_result =
-      OpamGlobalState.with_ `Lock_none @@ fun gs ->
-      OpamSwitchState.with_ `Lock_write gs @@ fun sw ->
-      let (sw, res) =
-        OpamSolution.apply sw
-          ~ask:false
-          ~requested:OpamPackage.Name.Set.empty
-          ~assume_built:false
-          cover_elt.Lib.solution
-      in
-      OpamSwitchState.drop sw;
-      res
+    let rec build_loop
+        (initial_iteration : bool)
+        (current_timestamp : Cover_state.t Versioned.t)
+      =
+      let cover_state = CCOpt.get_exn current_timestamp.head in
+      if Cover.is_empty cover_state.cover.data then
+        (* We are done *)
+        current_timestamp
+      else begin
+        (* Are the packages currently installed in the opam switch compatible with
+           the current cover_state? (are they included in the current cover
+           element?) *)
+        let cover_elt =
+          try
+            List.nth cover_state.cover.data
+              cover_state.cover_element_id.data
+          with Failure _ ->
+            fatal "In %s: invalid id (out of bounds)\n"
+              (OpamFilename.prettify cover_state.cover_element_id.path)
+        in
+        OpamGlobalState.with_ `Lock_none @@ fun gt ->
+        OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
+        let reinstall_switch =
+          not (OpamPackage.Set.subset sw.installed (Lib.installable cover_elt))
+        in
+        if reinstall_switch then begin
+          if initial_iteration then
+            log "Note: unwanted packages are currently installed...";
+          log "Re-creating the opam switch.";
+          let sw, gt =
+            OpamGlobalState.with_write_lock gt @@ fun gt ->
+            recreate_switch gt ~switch_name ~compiler in
+          OpamSwitchState.drop sw; OpamGlobalState.drop gt
+        end;
+
+        (* The cover element can now be built in the current opam switch *)
+
+        let build_result =
+          OpamGlobalState.with_ `Lock_none @@ fun gs ->
+          OpamSwitchState.with_ `Lock_write gs @@ fun sw ->
+          let (sw, res) =
+            OpamSolution.apply sw
+              ~ask:false
+              ~requested:OpamPackage.Name.Set.empty
+              ~assume_built:false
+              cover_elt.Lib.solution
+          in
+          OpamSwitchState.drop sw;
+          res
+        in
+
+        let pkg_success, pkg_error, pkg_aborted =
+          match build_result with
+          | Aborted -> fatal "Aborted build"
+          | Nothing_to_do -> [], [], []
+          | OK _actions ->
+            failwith "todo"
+          | Partial_error actions_result ->
+            List.map () actions_result.actions_successes,
+            List.map () actions_result.actions_errors,
+            List.map () actions_result.actions_aborted
+        in
+
+        failwith "todo"
+
+      end
     in
 
     ()

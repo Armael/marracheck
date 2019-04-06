@@ -53,6 +53,14 @@ type cover_elt = {
   useful: OpamPackage.Set.t;
 }
 
+let cover_elt_is_empty { useful; _ } =
+  (* The solver could produce a solution which installs spurious packages, so we
+     do not check that [OpamSolver.solution_is_empty solution].
+
+     If the set of useful packages to install is empty, it is enough to consider
+     the element as empty. *)
+  OpamPackage.Set.is_empty useful
+
 let pp_cover_elt fmt { solution; useful } =
   Format.fprintf fmt "{inst:%d, useful:%d}"
     (card (OpamSolver.new_packages solution))
@@ -60,30 +68,6 @@ let pp_cover_elt fmt { solution; useful } =
 
 let installable { solution; _ } =
   OpamSolver.new_packages solution
-
-let rec cover u acc to_install =
-  Format.printf "%.2f: <to_install size: %d>\n%!"
-    (Unix.gettimeofday () -. t0) (List.length to_install);
-  let to_install_s = OpamPackage.Set.of_list to_install in
-  let solution = make_request u to_install_s in
-  Format.printf "%.2f: DONE  %!" (Unix.gettimeofday () -. t0);
-  match solution with
-  | Ok solution ->
-    let installable = OpamSolver.new_packages solution in
-    let useful = OpamPackage.Set.inter to_install_s installable in
-    Format.printf "%a\n\n%!" pp_cover_elt { solution; useful };
-    if OpamPackage.Set.is_empty useful then
-      (List.rev acc, Error to_install)
-    else
-      let acc' = { solution; useful } :: acc in
-      let to_install' =
-        List.filter (fun pkg -> not (OpamPackage.Set.mem pkg installable))
-          to_install
-      in
-      if to_install' = [] then (List.rev acc', Ok ())
-      else cover u acc' to_install'
-  | Error _c ->
-    failwith "Conflict"
 
 let version_weights all_packages : float OpamPackage.Map.t =
   OpamPackage.to_map all_packages
@@ -101,9 +85,36 @@ let version_weights all_packages : float OpamPackage.Map.t =
   |> OSeq.flatten
   |> OpamPackage.Map.of_seq
 
-let dump_file = "last_run.dump"
-
 let compute_cover u packages =
+  let rec cover u acc to_install =
+    Format.printf "%.2f: <to_install size: %d>\n%!"
+      (Unix.gettimeofday () -. t0) (List.length to_install);
+    let to_install_s = OpamPackage.Set.of_list to_install in
+    let solution = make_request u to_install_s in
+    Format.printf "%.2f: DONE  %!" (Unix.gettimeofday () -. t0);
+    match solution with
+    | Ok solution ->
+      let installable = OpamSolver.new_packages solution in
+      let useful = OpamPackage.Set.inter to_install_s installable in
+      Format.printf "%a\n\n%!" pp_cover_elt { solution; useful };
+      if OpamPackage.Set.is_empty useful then begin
+        if acc = [] then
+          (* Return the trivial cover element in that case; the cover
+             must always be a non-empty list. *)
+          ([{solution; useful}], Error to_install)
+        else
+          (List.rev acc, Error to_install)
+      end else
+        let acc' = { solution; useful } :: acc in
+        let to_install' =
+          List.filter (fun pkg -> not (OpamPackage.Set.mem pkg installable))
+            to_install
+        in
+        if to_install' = [] then (List.rev acc', Ok ())
+        else cover u acc' to_install'
+    | Error _c ->
+      failwith "Conflict"
+  in
   let vw = version_weights packages in
   let packages_list =
     OpamPackage.Set.elements packages
@@ -111,6 +122,8 @@ let compute_cover u packages =
       Float.compare (OpamPackage.Map.find p2 vw) (OpamPackage.Map.find p1 vw))
   in
   cover u [] packages_list
+
+let dump_file = "last_run.dump"
 
 let repair_cover u cover broken_pkgs =
   CCList.flat_map (fun elt ->
