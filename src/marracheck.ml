@@ -117,6 +117,13 @@ let universe ~sw =
   OpamSwitchState.universe sw ~requested:OpamPackage.Name.Set.empty
     OpamTypes.Query (* for historical reasons; should not matter *)
 
+let current_universe () =
+  OpamGlobalState.with_ `Lock_none @@ fun gt ->
+  OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
+  let u = universe ~sw in
+  OpamSwitchState.drop sw; OpamGlobalState.drop gt;
+  u
+
 let validate_workdir working_dir =
   let workdir = Dir.of_string working_dir in
   mkdir workdir;
@@ -198,11 +205,6 @@ let retire_current_timestamp
     mv
       current_timestamp.git_repo
       File.Op.(past_timestamps / (cur_basename ^ "_" ^ timestamp_s))
-
-let compute_cover_of_selection ~compiler ~sw selection =
-  let u = universe ~sw in
-  let pkgs = compute_package_selection u compiler selection in
-  Cover.compute u pkgs
 
 let () =
   match Sys.argv |> Array.to_list |> List.tl with
@@ -330,11 +332,16 @@ let () =
 
     (* we have a switch of the right name, attached to the right repository *)
 
+    (* Compute a set of packages from the user package selection *)
+    let selection_packages : package_set =
+      compute_package_selection (current_universe ())
+        compiler pkgs_selection in
+
     let work_state =
       let view = Work_state.View_single.load_or_create compiler in
       Work_state.load_or_create ~view ~workdir in
     let switch_state = work_state.view in
-    let current_timestamp : Cover_state.t Versioned.t =
+    let current_timestamp, selection_to_build =
       let repo_timestamp = get_repo_timestamp repo_url in
       match switch_state.current_timestamp.head with
       | Some cover_state ->
@@ -349,10 +356,7 @@ let () =
             Versioned.load_and_clean
               ~repo:switch_state.current_timestamp.git_repo
               ~load:Cover_state.load in
-          let cover =
-            OpamGlobalState.with_ `Lock_none @@ fun gt ->
-            OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
-            compute_cover_of_selection ~sw ~compiler pkgs_selection in
+          let cover = Cover.compute (current_universe ()) selection_packages in
           let cover_state = Cover_state.create
               ~dir:switch_state.current_timestamp.git_repo
               ~timestamp:repo_timestamp ~cover in
@@ -360,7 +364,7 @@ let () =
             { current_timestamp with head = Some cover_state } in
           Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
             "Initial cover";
-          current_timestamp
+          current_timestamp, selection_packages
         end else begin
           (* Is this cover compatible with the package selection we are using
              currently?
@@ -369,20 +373,6 @@ let () =
 
              If not, compute a new cover (without the packages of the selection
              that we already built, in this cover or even before). *)
-
-          (* FIXME: this branch of the code is doing something that is
-             correct but not consistent with the rest of the code: it is
-             trimming the selection to remove packages that appear in the
-             report (so have already been built (or failed to build)).
-
-             This sounds like a good thing to do in general. But then we should
-             do that in the other cases as well. And log to the user what is
-             happening.
-          *)
-          let current_selection =
-            OpamGlobalState.with_ `Lock_none @@ fun gt ->
-            OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
-            compute_package_selection (universe ~sw) compiler pkgs_selection in
           let already_built =
             List.map fst cover_state.report.data
             |> OpamPackage.Set.of_list in
@@ -393,9 +383,9 @@ let () =
             |> List.fold_left OpamPackage.Set.union OpamPackage.Set.empty
           in
           let selection_to_build =
-            OpamPackage.Set.diff current_selection already_built in
+            OpamPackage.Set.diff selection_packages already_built in
           if OpamPackage.Set.equal selection_to_build cover_state_to_build then
-            switch_state.current_timestamp
+            switch_state.current_timestamp, selection_to_build
           else
             (* Recompute a cover for the remaining packages of the selection to
                build *)
@@ -412,14 +402,11 @@ let () =
               { switch_state.current_timestamp with head = Some cover_state } in
             Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
               "New packages selection: compute a new cover";
-            current_timestamp
+            current_timestamp, selection_to_build
         end
       | None ->
         (* There is no pre-existing cover. Compute a fresh one. *)
-        let cover =
-          OpamGlobalState.with_ `Lock_none @@ fun gt ->
-          OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
-          compute_cover_of_selection ~sw ~compiler pkgs_selection in
+        let cover = Cover.compute (current_universe ()) selection_packages in
         let cover_state = Cover_state.create
             ~dir:switch_state.current_timestamp.git_repo
             ~timestamp:repo_timestamp ~cover in
@@ -427,8 +414,14 @@ let () =
           { switch_state.current_timestamp with head = Some cover_state } in
         Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
           "Initial cover";
-        current_timestamp
+        current_timestamp, selection_packages
     in
+
+    log "User package selection includes %d packages, \n\
+        \  %d have already been processed, only %d new to build"
+      (OpamPackage.Set.cardinal selection_packages)
+      (OpamPackage.Set.(cardinal (diff selection_packages selection_to_build)))
+      (OpamPackage.Set.(cardinal selection_to_build));
 
     (* An adequate cover_state has been fetched or created. *)
 
@@ -448,7 +441,7 @@ let () =
       =
       let cover_state = CCOpt.get_exn current_timestamp.head in
       if Cover.is_empty cover_state.cover.data then
-        (* We are done *)
+        (* An empty cover means that we are done *)
         current_timestamp
       else begin
         (* Are the packages currently installed in the opam switch compatible with
@@ -510,6 +503,7 @@ let () =
       end
     in
 
+    let current_timestamp = build_loop true current_timestamp in
     ()
 
   | "cache" :: _ ->
