@@ -190,6 +190,59 @@ let recreate_switch gt ~switch_name ~compiler =
   OpamGlobalState.with_write_lock gt @@ fun gt ->
   OpamSwitchAction.set_current_switch `Lock_none gt ~rt switch_name, gt
 
+let build_log_of_exn exn =
+  (* Similar to the reporting code in OpamSolution.Json.exc *)
+  match exn with
+  | OpamSystem.Process_error
+      { OpamProcess.r_code; r_duration; r_info; r_stdout; r_stderr; _ } ->
+    let (@) l l' = List.rev_append (List.rev l) l' in
+    [Printf.sprintf "======= Return code: %d =======" r_code;
+     Printf.sprintf "======= Duration: %f =======" r_duration;
+     "======= Info ======="] @
+    (List.map (fun (k, v) -> Printf.sprintf "%s: %s" k v) r_info) @
+    ["======= Output ======="] @ r_stdout @
+    ["======= Stderr ======="] @ r_stderr
+  | OpamSystem.Internal_error s ->
+    ["======= Internal error ======="; s]
+  | Failure s ->
+    ["======= Failure ======="; s]
+  | e ->
+    ["======= Exception ======="; Printexc.to_string e]
+
+let process_solution_result (result: solution_result) =
+  let successes = CCList.filter_map (function
+    | `Build p ->
+      (* The action itself is not very relevant since everything
+         suceeded. It could be `Install or `Fetch as well. *)
+      (* FIXME: how do we get the build logs? *)
+      Some (p, Success { log = ["TODO"]; changes = Changes })
+    | `Install _ | `Fetch _ -> None
+    | `Change _ | `Reinstall _ | `Remove _ -> assert false
+  ) in
+  let failures = CCList.map (fun (action, exn) ->
+    match action with
+    | `Fetch p ->
+      p, Error { log = build_log_of_exn exn; cause = `Fetch }
+    | `Build p ->
+      p, Error { log = build_log_of_exn exn; cause = `Build }
+    | `Install p ->
+      p, Error { log = build_log_of_exn exn; cause = `Install }
+    | `Change _ | `Reinstall _ | `Remove _ -> assert false
+  ) in
+  let aborted l = CCList.map (function
+    | `Build p | `Install p | `Fetch p -> p
+    | `Change _ | `Reinstall _ | `Remove _ -> assert false
+  ) l |> CCList.sort_uniq ~cmp:OpamPackage.compare
+  in
+  match result with
+  | Aborted -> fatal "Aborted build"
+  | Nothing_to_do -> assert false
+  | OK actions -> successes actions, [], []
+  | Partial_error actions_result ->
+    successes actions_result.actions_successes,
+    failures actions_result.actions_errors,
+    aborted actions_result.actions_aborted
+
 let retire_current_timestamp
     ~(current_timestamp : Cover_state.t Versioned.t)
     ~(past_timestamps : dirname)
@@ -418,7 +471,7 @@ let () =
     in
 
     log "User package selection includes %d packages, \n\
-        \  %d have already been processed, only %d new to build"
+        \  %d have already been processed, %d new packages to build"
       (OpamPackage.Set.cardinal selection_packages)
       (OpamPackage.Set.(cardinal (diff selection_packages selection_to_build)))
       (OpamPackage.Set.(cardinal selection_to_build));
@@ -472,7 +525,7 @@ let () =
 
         (* The cover element can now be built in the current opam switch *)
 
-        let build_result =
+        let pkgs_success, pkgs_error, pkgs_aborted =
           OpamGlobalState.with_ `Lock_none @@ fun gs ->
           OpamSwitchState.with_ `Lock_write gs @@ fun sw ->
           let (sw, res) =
@@ -483,23 +536,10 @@ let () =
               cover_elt.Lib.solution
           in
           OpamSwitchState.drop sw;
-          res
-        in
-
-        let pkg_success, pkg_error, pkg_aborted =
-          match build_result with
-          | Aborted -> fatal "Aborted build"
-          | Nothing_to_do -> [], [], []
-          | OK _actions ->
-            failwith "todo"
-          | Partial_error actions_result ->
-            List.map () actions_result.actions_successes,
-            List.map () actions_result.actions_errors,
-            List.map () actions_result.actions_aborted
+          process_solution_result res
         in
 
         failwith "todo"
-
       end
     in
 

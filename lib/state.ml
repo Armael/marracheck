@@ -88,7 +88,7 @@ module Serialized = struct
 end
 
 type timestamp = string (* git hash *)
-type build_log = string
+type build_log = string list
 type changes = Changes (* fixme *)
 type error_cause = [ `Fetch | `Build | `Install ]
 
@@ -105,7 +105,7 @@ let package_report_of_json (j: Json.value): package_report =
   try
     begin match Json.get_string (List.assoc "status" l) with
     | "success" ->
-      Success { log = Json.get_string (List.assoc "log" l);
+      Success { log = Json.get_list Json.get_string (List.assoc "log" l);
                 changes = Changes (* TODO *) }
     | "error" ->
       let cause = match Json.get_string (List.assoc "cause" l) with
@@ -114,7 +114,7 @@ let package_report_of_json (j: Json.value): package_report =
         | "install" -> `Install
         | _ -> raise Not_found
       in
-      Error { log = Json.get_string (List.assoc "log" l); cause }
+      Error { log = Json.get_list Json.get_string (List.assoc "log" l); cause }
     | "aborted" ->
       let deps = match OpamPackage.Set.of_json (List.assoc "deps" l) with
         | Some deps -> deps
@@ -128,7 +128,7 @@ let package_report_of_json (j: Json.value): package_report =
 let package_report_to_json = function
   | Success { log; changes = Changes (* TODO *) } ->
     `O [ ("status", `String "success");
-         ("log", `String log) ]
+         ("log", Json.strings log) ]
   | Error { log; cause } ->
     let cause_s = match cause with
       | `Fetch -> "fetch"
@@ -136,7 +136,7 @@ let package_report_to_json = function
       | `Install -> "install"
     in
     `O [ ("status", `String "error");
-         ("log", `String log);
+         ("log", Json.strings log);
          ("cause", `String cause_s) ]
   | Aborted { deps } ->
     `O [ ("status", `String "aborted");
@@ -158,8 +158,7 @@ module Cover = struct
   let compute (u : universe) (selection : OpamPackage.Set.t) : t =
     let (cover, remain) = Lib.compute_cover u selection in
     assert (cover <> []);
-    (* [selection] must only contain installable packages (see
-       [compute_package_selection]). *)
+    (* [selection] must only contain installable packages *)
     assert (remain = Ok ());
     if OpamPackage.Set.is_empty selection then
       assert (is_empty cover);
