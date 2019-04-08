@@ -190,13 +190,15 @@ let recreate_switch gt ~switch_name ~compiler =
   OpamGlobalState.with_write_lock gt @@ fun gt ->
   OpamSwitchAction.set_current_switch `Lock_none gt ~rt switch_name, gt
 
+let (@) l l' = List.rev_append (List.rev l) l'
+
 let build_log_of_exn exn =
   (* Similar to the reporting code in OpamSolution.Json.exc *)
   match exn with
   | OpamSystem.Process_error
       { OpamProcess.r_code; r_duration; r_info; r_stdout; r_stderr; _ } ->
-    let (@) l l' = List.rev_append (List.rev l) l' in
-    [Printf.sprintf "======= Return code: %d =======" r_code;
+    ["======= Process error =======";
+     Printf.sprintf "======= Return code: %d =======" r_code;
      Printf.sprintf "======= Duration: %f =======" r_duration;
      "======= Info ======="] @
     (List.map (fun (k, v) -> Printf.sprintf "%s: %s" k v) r_info) @
