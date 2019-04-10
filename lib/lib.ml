@@ -53,14 +53,6 @@ type cover_elt = {
   useful: OpamPackage.Set.t;
 }
 
-let cover_elt_is_empty { useful; _ } =
-  (* The solver could produce a solution which installs spurious packages, so we
-     do not check that [OpamSolver.solution_is_empty solution].
-
-     If the set of useful packages to install is empty, it is enough to consider
-     the element as empty. *)
-  OpamPackage.Set.is_empty useful
-
 let pp_cover_elt fmt { solution; useful } =
   Format.fprintf fmt "{inst:%d, useful:%d}"
     (card (OpamSolver.new_packages solution))

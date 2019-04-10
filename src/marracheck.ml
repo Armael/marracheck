@@ -421,38 +421,39 @@ let () =
             "Initial cover";
           current_timestamp, selection_packages
         end else begin
-          (* Is this cover compatible with the package selection we are using
-             currently?
+          (* If we are currently building a cover, avoid recomputing it if
+             the selection matches what the cover is computing.
 
-             That is, ["useful" packages of the cover] = packages selection?
+             That is, ["useful" packages of the cover] = packages selection.
 
              If not, compute a new cover (without the packages of the selection
              that we already built, in this cover or even before). *)
           let already_built =
             List.map fst cover_state.report.data
             |> OpamPackage.Set.of_list in
-          let cover_state_to_build =
-            CCList.drop cover_state.cover_element_id.data
-              cover_state.cover.data
+          (* Only consider the cover elements that remain to be built *)
+          let cover_elts_to_build =
+            match cover_state.build_status.data with
+            | Building_element id -> CCList.drop id cover_state.cover.data
+            | Build_finished -> []
+          in
+          let cover_pkgs_to_build =
+            cover_elts_to_build
             |> List.map (fun elt -> elt.Lib.useful)
             |> List.fold_left OpamPackage.Set.union OpamPackage.Set.empty
           in
           let selection_to_build =
             OpamPackage.Set.diff selection_packages already_built in
-          if OpamPackage.Set.equal selection_to_build cover_state_to_build then
+          if OpamPackage.Set.equal selection_to_build cover_pkgs_to_build then
             switch_state.current_timestamp, selection_to_build
           else
             (* Recompute a cover for the remaining packages of the selection to
                build *)
-            let cover =
-              OpamGlobalState.with_ `Lock_none @@ fun gt ->
-              OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
-              Cover.compute (universe ~sw) selection_to_build in
-            let cover_state = {
-              cover_state with
-              cover = { cover_state.cover with data = cover };
-              cover_element_id = { cover_state.cover_element_id with data = 0 }
-            } in
+            let cover_state =
+              Cover_state.update_cover
+                ~cover:(Cover.compute (current_universe ()) selection_to_build)
+                cover_state
+            in
             let current_timestamp =
               { switch_state.current_timestamp with head = Some cover_state } in
             Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
@@ -461,10 +462,10 @@ let () =
         end
       | None ->
         (* There is no pre-existing cover. Compute a fresh one. *)
-        let cover = Cover.compute (current_universe ()) selection_packages in
         let cover_state = Cover_state.create
             ~dir:switch_state.current_timestamp.git_repo
-            ~timestamp:repo_timestamp ~cover in
+            ~timestamp:repo_timestamp
+            ~cover:(Cover.compute (current_universe ()) selection_packages) in
         let current_timestamp =
           { switch_state.current_timestamp with head = Some cover_state } in
         Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
@@ -495,20 +496,18 @@ let () =
         (current_timestamp : Cover_state.t Versioned.t)
       =
       let cover_state = CCOpt.get_exn current_timestamp.head in
-      if Cover.is_empty cover_state.cover.data then
-        (* An empty cover means that we are done *)
+      match cover_state.build_status.data with
+      | Build_finished ->
         current_timestamp
-      else begin
+      | Building_element cover_elt_id ->
         (* Are the packages currently installed in the opam switch compatible with
            the current cover_state? (are they included in the current cover
            element?) *)
         let cover_elt =
-          try
-            List.nth cover_state.cover.data
-              cover_state.cover_element_id.data
+          try List.nth cover_state.cover.data cover_elt_id
           with Failure _ ->
             fatal "In %s: invalid id (out of bounds)\n"
-              (OpamFilename.prettify cover_state.cover_element_id.path)
+              (OpamFilename.prettify cover_state.build_status.path)
         in
         OpamGlobalState.with_ `Lock_none @@ fun gt ->
         OpamSwitchState.with_ `Lock_read gt @@ fun sw ->

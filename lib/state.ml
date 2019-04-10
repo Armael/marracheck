@@ -15,7 +15,7 @@ let past_timestamps_path = "past_timestamps"
 let timestamp_path = "timestamp"
 let cover_path = "cover.json"
 let report_path = "report.json"
-let cover_element_id_path = "cover_element_build.id"
+let build_status_path = "build_status.json"
 
 module Versioned = struct
   type 'a t = {
@@ -143,17 +143,7 @@ let package_report_to_json = function
          ("deps", OpamPackage.Set.to_json deps) ]
 
 module Cover = struct
-  (* Always a non-empty list.
-
-     The empty cover is represented by a single empty cover_elt
-     (satisfying [Lib.cover_elt_is_empty]).
-  *)
   type t = Lib.cover_elt list
-
-  let is_empty = function
-    | [] -> assert false
-    | [elt] -> Lib.cover_elt_is_empty elt
-    | _ :: _ -> false
 
   let compute (u : universe) (selection : OpamPackage.Set.t) : t =
     let (cover, remain) = Lib.compute_cover u selection in
@@ -161,7 +151,7 @@ module Cover = struct
     (* [selection] must only contain installable packages *)
     assert (remain = Ok ());
     if OpamPackage.Set.is_empty selection then
-      assert (is_empty cover);
+      assert (cover = []);
     cover
 
   let of_json (j: Json.t): t =
@@ -188,22 +178,35 @@ end
 
 module Cover_state = struct
   type report = (OpamPackage.t * package_report) list
-  type element_id = int
+  type build_status =
+    | Building_element of int (* index of the cover element in the [Cover.t] *)
+    | Build_finished
 
   type t = {
     timestamp : timestamp Serialized.t;
     cover : Cover.t Serialized.t;
     report : report Serialized.t;
-    cover_element_id : element_id Serialized.t;
+    build_status : build_status Serialized.t;
   }
+
+  let initial_build_status ~cover =
+    if cover = [] then Build_finished
+    else Building_element 0
 
   let create ~dir ~timestamp ~cover =
     let open OpamFilename in
     { timestamp = { data = timestamp; path = Op.(dir // timestamp_path) };
       cover = { data = cover; path = Op.(dir // cover_path) };
       report = { data = []; path = Op.(dir // report_path) };
-      cover_element_id = { data = 0; path = Op.(dir // cover_element_id_path) };
+      build_status = { data = initial_build_status ~cover;
+                      path = Op.(dir // build_status_path) };
     }
+
+  let update_cover ~cover st =
+    { st with
+      cover = { st.cover with data = cover };
+      build_status = { st.build_status with
+                       data = initial_build_status ~cover } }
 
   (* This assumes that the files already exist on the filesystem in a valid
      state *)
@@ -226,18 +229,19 @@ module Cover_state = struct
         Json.Parse_error (_,_) ->
         fatal "In %s: invalid format"
           OpamFilename.(prettify Op.(dir // report_path)) in
-    let cover_element_id_of_json = function
-      | `O [ "id", `Float id ] -> truncate id
-      | _ -> fatal "In %s: invalid format (expected { \"id\" : ... })"
-               (OpamFilename.(prettify Op.(dir // cover_element_id_path)))
+    let build_status_of_json = function
+      | `O [ "building_element", `Float id ] -> Building_element (truncate id)
+      | `O [ "build_finished", `Null ] -> Build_finished
+      | _ -> fatal "In %s: invalid format"
+               (OpamFilename.(prettify Op.(dir // build_status_path)))
     in
     { timestamp = Serialized.load_raw ~file:Op.(dir // timestamp_path);
       cover = Serialized.load_json ~file:Op.(dir // cover_path) Cover.of_json;
       report =
         Serialized.load_json ~file:Op.(dir // report_path) report_of_json;
-      cover_element_id =
-        Serialized.load_json ~file:Op.(dir // cover_element_id_path)
-          cover_element_id_of_json; }
+      build_status =
+        Serialized.load_json ~file:Op.(dir // build_status_path)
+          build_status_of_json; }
 
   let sync state : unit =
     let report_to_json r =
@@ -246,13 +250,14 @@ module Cover_state = struct
                ("report", package_report_to_json pkg_report) ]
       ) r
     in
-    let cover_element_id_to_json id =
-      `O [ "id", `Float (float id) ]
+    let build_status_to_json = function
+      | Building_element id -> `O [ "building_element", `Float (float id) ]
+      | Build_finished -> `O [ "build_finished", `Null ]
     in
     Serialized.sync_raw state.timestamp;
     Serialized.sync_json state.cover Cover.to_json;
     Serialized.sync_json state.report report_to_json;
-    Serialized.sync_json state.cover_element_id cover_element_id_to_json
+    Serialized.sync_json state.build_status build_status_to_json
 end
 
 module Switch_state = struct
