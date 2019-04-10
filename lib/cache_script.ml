@@ -41,7 +41,7 @@ case $COMMAND in
         else
             if [ -f "$FAILURE_CACHE" ]; then
                 # We already know this package fails
-                printf "Package in failure cache; exiting" >&2
+                printf "WARNING: Package in failure cache; exiting" >&2
                 exit 1
             else
                 if "$@" ; then exit 0

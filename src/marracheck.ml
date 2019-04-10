@@ -117,7 +117,7 @@ let universe ~sw =
   OpamSwitchState.universe sw ~requested:OpamPackage.Name.Set.empty
     OpamTypes.Query (* for historical reasons; should not matter *)
 
-let current_universe () =
+let switch_universe () =
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
   let u = universe ~sw in
@@ -190,10 +190,9 @@ let recreate_switch gt ~switch_name ~compiler =
   OpamGlobalState.with_write_lock gt @@ fun gt ->
   OpamSwitchAction.set_current_switch `Lock_none gt ~rt switch_name, gt
 
-let (@) l l' = List.rev_append (List.rev l) l'
-
 let build_log_of_exn exn =
   (* Similar to the reporting code in OpamSolution.Json.exc *)
+  let (@) l l' = List.rev_append (List.rev l) l' in
   match exn with
   | OpamSystem.Process_error
       { OpamProcess.r_code; r_duration; r_info; r_stdout; r_stderr; _ } ->
@@ -260,6 +259,25 @@ let retire_current_timestamp
     mv
       current_timestamp.git_repo
       File.Op.(past_timestamps / (cur_basename ^ "_" ^ timestamp_s))
+
+let filter_universe (p: OpamPackage.t -> bool) (u: universe): universe =
+  (* It should be enough to remove the package from the "available" set.
+     TODO: test that this is the case (i.e. we don't try to build packages
+     that have been removed from this set. In particular, there should be
+     no cache hit for a "build failure".) *)
+  { u with u_available = OpamPackage.Set.filter p u.u_available }
+
+let filtered_switch_universe (cover_state: Cover_state.t) =
+  let broken_packages =
+    cover_state.report.data
+    |> CCList.filter_map (function
+      | (pkg, Error _) -> Some pkg
+      | _ -> None)
+    |> OpamPackage.Set.of_list
+  in
+  filter_universe
+    (fun pkg -> not (OpamPackage.Set.mem pkg broken_packages))
+    (switch_universe ())
 
 let () =
   match Sys.argv |> Array.to_list |> List.tl with
@@ -387,16 +405,19 @@ let () =
 
     (* we have a switch of the right name, attached to the right repository *)
 
-    (* Compute a set of packages from the user package selection *)
-    let selection_packages : package_set =
-      compute_package_selection (current_universe ())
-        compiler pkgs_selection in
+    (* Compute a set of packages from the user package selection.
+       This depends on the universe, which is resolved below:
+       we might want to filter the universe from the opam switch to remove
+       the packages that we already know to be broken
+    *)
+    let compute_selection_packages : universe -> package_set =
+      fun u -> compute_package_selection u compiler pkgs_selection in
 
     let work_state =
       let view = Work_state.View_single.load_or_create compiler in
       Work_state.load_or_create ~view ~workdir in
     let switch_state = work_state.view in
-    let current_timestamp, selection_to_build =
+    let current_timestamp, universe, selection_to_build =
       let repo_timestamp = get_repo_timestamp repo_url in
       match switch_state.current_timestamp.head with
       | Some cover_state ->
@@ -411,15 +432,17 @@ let () =
             Versioned.load_and_clean
               ~repo:switch_state.current_timestamp.git_repo
               ~load:Cover_state.load in
-          let cover = Cover.compute (current_universe ()) selection_packages in
+          let universe = switch_universe () in
+          let selection_packages = compute_selection_packages universe in
           let cover_state = Cover_state.create
               ~dir:switch_state.current_timestamp.git_repo
-              ~timestamp:repo_timestamp ~cover in
+              ~timestamp:repo_timestamp
+              ~cover:(Cover.compute universe selection_packages) in
           let current_timestamp =
             { current_timestamp with head = Some cover_state } in
           Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
             "Initial cover";
-          current_timestamp, selection_packages
+          current_timestamp, universe, selection_packages
         end else begin
           (* If we are currently building a cover, avoid recomputing it if
              the selection matches what the cover is computing.
@@ -442,42 +465,49 @@ let () =
             |> List.map (fun elt -> elt.Lib.useful)
             |> List.fold_left OpamPackage.Set.union OpamPackage.Set.empty
           in
+          let universe = filtered_switch_universe cover_state in
+          let selection_packages = compute_selection_packages universe in
           let selection_to_build =
             OpamPackage.Set.diff selection_packages already_built in
+
+          log "User package selection includes %d packages,\
+               %d have already been processed"
+            (OpamPackage.Set.cardinal selection_packages)
+            (OpamPackage.Set.cardinal already_built);
+
           if OpamPackage.Set.equal selection_to_build cover_pkgs_to_build then
-            switch_state.current_timestamp, selection_to_build
+            let () = log "Reusing the current cover for the selection" in
+            switch_state.current_timestamp, universe, selection_to_build
           else
             (* Recompute a cover for the remaining packages of the selection to
                build *)
+            let () = log "Computing a new cover for the new selection" in
             let cover_state =
               Cover_state.update_cover
-                ~cover:(Cover.compute (current_universe ()) selection_to_build)
-                cover_state
+                ~cover:(Cover.compute universe selection_to_build) cover_state
             in
             let current_timestamp =
               { switch_state.current_timestamp with head = Some cover_state } in
             Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
               "New packages selection: compute a new cover";
-            current_timestamp, selection_to_build
+            current_timestamp, universe, selection_to_build
         end
       | None ->
         (* There is no pre-existing cover. Compute a fresh one. *)
+        let universe = switch_universe () in
+        let selection_packages = compute_selection_packages universe in
         let cover_state = Cover_state.create
             ~dir:switch_state.current_timestamp.git_repo
             ~timestamp:repo_timestamp
-            ~cover:(Cover.compute (current_universe ()) selection_packages) in
+            ~cover:(Cover.compute universe selection_packages) in
         let current_timestamp =
           { switch_state.current_timestamp with head = Some cover_state } in
         Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
           "Initial cover";
-        current_timestamp, selection_packages
+        current_timestamp, universe, selection_packages
     in
-
-    log "User package selection includes %d packages, \n\
-        \  %d have already been processed, %d new packages to build"
-      (OpamPackage.Set.cardinal selection_packages)
-      (OpamPackage.Set.(cardinal (diff selection_packages selection_to_build)))
-      (OpamPackage.Set.(cardinal selection_to_build));
+    log "%d new packages to build"
+      (OpamPackage.Set.cardinal selection_to_build);
 
     (* An adequate cover_state has been fetched or created. *)
 
@@ -498,6 +528,7 @@ let () =
       let cover_state = CCOpt.get_exn current_timestamp.head in
       match cover_state.build_status.data with
       | Build_finished ->
+        log "Finished building all packages of the selection";
         current_timestamp
       | Building_element cover_elt_id ->
         (* Are the packages currently installed in the opam switch compatible with
@@ -558,15 +589,16 @@ let () =
                - those that are uninstallable are recorded as aborted in the report
                - relax the assertion in Cover.compute to allow returning
                  uninstallable packages for this
-             *)
+            *)
             failwith "todo"
           end
         in
         Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp msg;
+        log "%s" msg;
         build_loop false current_timestamp
     in
 
-    let current_timestamp = build_loop true current_timestamp in
+    let _current_timestamp = build_loop true current_timestamp in
     ()
 
   | "cache" :: _ ->
