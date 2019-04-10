@@ -540,8 +540,30 @@ let () =
           process_solution_result res
         in
 
-        failwith "todo"
-      end
+        let current_timestamp, msg =
+          if pkgs_error = [] then begin
+            assert (pkgs_aborted = []);
+            (* Go to the next cover element *)
+            let cover_state =
+              Cover_state.go_to_next_elt cover_state
+              |> Cover_state.add_to_report pkgs_success
+            in
+            { switch_state.current_timestamp with head = Some cover_state },
+            "Cover element build successful; going to next element"
+          end else begin
+            (* todo
+               - recompute cover
+               - add aborted pkgs in the new cover computation
+               - remove error pkgs in the new cover computation
+               - those that are uninstallable are recorded as aborted in the report
+               - relax the assertion in Cover.compute to allow returning
+                 uninstallable packages for this
+             *)
+            failwith "todo"
+          end
+        in
+        Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp msg;
+        build_loop false current_timestamp
     in
 
     let current_timestamp = build_loop true current_timestamp in

@@ -208,6 +208,23 @@ module Cover_state = struct
       build_status = { st.build_status with
                        data = initial_build_status ~cover } }
 
+  let go_to_next_elt (st: t): t =
+    match st.build_status.data with
+    | Build_finished ->
+      (* Be conservative *)
+      assert false
+    | Building_element id ->
+      assert (0 <= id && id < List.length st.cover.data);
+      let build_status =
+        if id = List.length st.cover.data - 1 then Build_finished
+        else Building_element (id + 1)
+      in
+      { st with build_status = { st.build_status with data = build_status } }
+
+  let add_to_report report (st: t): t =
+    let (@) l l' = List.rev_append (List.rev l) l' in
+    { st with report = { st.report with data = st.report.data @ report } }
+
   (* This assumes that the files already exist on the filesystem in a valid
      state *)
   let load ~dir : t =
