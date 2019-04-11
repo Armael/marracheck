@@ -279,6 +279,11 @@ let filtered_switch_universe (cover_state: Cover_state.t) =
     (fun pkg -> not (OpamPackage.Set.mem pkg broken_packages))
     (switch_universe ())
 
+let cover_pkgs (cover: Cover.t): package_set =
+  cover
+  |> List.map (fun elt -> elt.Lib.useful)
+  |> List.fold_left OpamPackage.Set.union OpamPackage.Set.empty
+
 let () =
   match Sys.argv |> Array.to_list |> List.tl with
   | "run" ::
@@ -375,9 +380,9 @@ let () =
             let global_repos = OpamGlobalState.repos_list gt in
             let sw_repos = OpamSwitchState.repos_list sw in
             let sw_repos = if sw_repos = [] then (
-                log "WARN? Switch has no repos; using the global list of repos";
-                global_repos
-              ) else sw_repos in
+              log "WARN? Switch has no repos; using the global list of repos";
+              global_repos
+            ) else sw_repos in
             if sw_repos <> [OpamRepositoryName.default] then
               fatal "The existing switch has unexpected repositories \
                      (expected only \"%s\")"
@@ -455,15 +460,10 @@ let () =
             List.map fst cover_state.report.data
             |> OpamPackage.Set.of_list in
           (* Only consider the cover elements that remain to be built *)
-          let cover_elts_to_build =
-            match cover_state.build_status.data with
+          let cover_pkgs_to_build =
+            cover_pkgs @@ match cover_state.build_status.data with
             | Building_element id -> CCList.drop id cover_state.cover.data
             | Build_finished -> []
-          in
-          let cover_pkgs_to_build =
-            cover_elts_to_build
-            |> List.map (fun elt -> elt.Lib.useful)
-            |> List.fold_left OpamPackage.Set.union OpamPackage.Set.empty
           in
           let universe = filtered_switch_universe cover_state in
           let selection_packages = compute_selection_packages universe in
@@ -523,6 +523,7 @@ let () =
 
     let rec build_loop
         (initial_iteration : bool)
+        (universe : universe)
         (current_timestamp : Cover_state.t Versioned.t)
       =
       let cover_state = CCOpt.get_exn current_timestamp.head in
@@ -571,34 +572,54 @@ let () =
           process_solution_result res
         in
 
-        let current_timestamp, msg =
+        let universe, cover_state, msg =
+          let cover_state =
+            cover_state
+            |> Cover_state.add_to_report pkgs_success
+            |> Cover_state.add_to_report pkgs_error
+          in
           if pkgs_error = [] then begin
             assert (pkgs_aborted = []);
             (* Go to the next cover element *)
-            let cover_state =
-              Cover_state.go_to_next_elt cover_state
-              |> Cover_state.add_to_report pkgs_success
-            in
-            { switch_state.current_timestamp with head = Some cover_state },
+            let cover_state = Cover_state.go_to_next_elt cover_state in
+            universe, cover_state,
             "Cover element build successful; going to next element"
           end else begin
-            (* todo
-               - recompute cover
-               - add aborted pkgs in the new cover computation
-               - remove error pkgs in the new cover computation
-               - those that are uninstallable are recorded as aborted in the report
-               - relax the assertion in Cover.compute to allow returning
-                 uninstallable packages for this
-            *)
-            failwith "todo"
+            let pkgs_error_s =
+              List.map fst pkgs_error |> OpamPackage.Set.of_list in
+            (* Recompute the cover, adding the aborted packages, and remove
+               the packages that failed from the universe *)
+            let universe = filter_universe
+                (fun pkg -> not (OpamPackage.Set.mem pkg pkgs_error_s))
+                universe
+            in
+            let pkgs =
+              OpamPackage.Set.union
+                (cover_pkgs (CCList.drop cover_elt_id cover_state.cover.data))
+                (OpamPackage.Set.of_list pkgs_aborted)
+            in
+            let cover, uninst = Cover.compute_with_uninst universe pkgs in
+            let cover_state =
+              cover_state
+              |> Cover_state.add_to_report
+                (List.map (fun p ->
+                   (* TODO(?): deps *)
+                   p, Aborted { deps = OpamPackage.Set.empty }) uninst)
+              |> Cover_state.update_cover ~cover
+            in
+            universe, cover_state,
+            "Cover element build terminated with some failures, recomputing \
+             a new cover for the rest of the packages"
           end
         in
+        let current_timestamp =
+          { switch_state.current_timestamp with head = Some cover_state } in
         Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp msg;
         log "%s" msg;
-        build_loop false current_timestamp
+        build_loop false universe current_timestamp
     in
 
-    let _current_timestamp = build_loop true current_timestamp in
+    let _current_timestamp = build_loop true universe current_timestamp in
     ()
 
   | "cache" :: _ ->

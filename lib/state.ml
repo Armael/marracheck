@@ -145,13 +145,22 @@ let package_report_to_json = function
 module Cover = struct
   type t = Lib.cover_elt list
 
-  let compute (u : universe) (selection : OpamPackage.Set.t) : t =
+  (* Allow some packages of the input selection to not be installable *)
+  let compute_with_uninst
+      (u : universe) (selection : OpamPackage.Set.t) :
+    t * package list =
     let (cover, remain) = Lib.compute_cover u selection in
-    assert (cover <> []);
-    (* [selection] must only contain installable packages *)
-    assert (remain = Ok ());
     if OpamPackage.Set.is_empty selection then
       assert (cover = []);
+    let uninst = match remain with
+      | Ok () -> []
+      | Error uninst -> uninst
+    in
+    cover, uninst
+
+  let compute (u: universe) (selection: OpamPackage.Set.t): t =
+    let cover, uninst = compute_with_uninst u selection in
+    assert (uninst = []);
     cover
 
   let of_json (j: Json.t): t =
