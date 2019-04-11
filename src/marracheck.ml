@@ -288,8 +288,7 @@ let () =
   match Sys.argv |> Array.to_list |> List.tl with
   | "run" ::
     "--repo" :: repo_url ::
-    (* "-k/--kind" :: repo_kind *)
-    (* "--packages" :: packages_selection :: *)
+    (* "--packages" :: pkgs_selection :: *)
     working_dir ::
     compiler_variant ::
     [] ->
