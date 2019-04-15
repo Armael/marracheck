@@ -23,7 +23,7 @@ depends: [
   "bos"
   "oseq"
   "containers"
-  "ezjsonm"
+  "ezjsonm" {>= "1.1.0"}
   "z3"
 ]
 pin-depends: [
@@ -33,7 +33,6 @@ pin-depends: [
   ["opam-repository.2.0.0" "git+https://github.com/Armael/opam#marracheck"]
   ["opam-solver.2.0.0" "git+https://github.com/Armael/opam#marracheck"]
   ["opam-state.2.0.0" "git+https://github.com/Armael/opam#marracheck"]
-  ["ezjsonm.1.0.0" "git+https://github.com/mirage/ezjsonm"]
 ]
 synopsis: "Gotta check them all!"
 description: """
