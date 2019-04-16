@@ -405,6 +405,7 @@ let () =
       OpamSwitchState.drop sw
     end;
 
+    OpamStateConfig.update ~current_switch:switch_name ();
     log "Using opam switch %s" (OpamSwitch.to_string switch_name);
 
     (* we have a switch of the right name, attached to the right repository *)
@@ -493,12 +494,16 @@ let () =
         end
       | None ->
         (* There is no pre-existing cover. Compute a fresh one. *)
+        log "Computing the switch universe";
         let universe = switch_universe () in
+        log "Computing the selection packages";
         let selection_packages = compute_selection_packages universe in
+        log "Computing the cover state";
         let cover_state = Cover_state.create
             ~dir:switch_state.current_timestamp.git_repo
             ~timestamp:repo_timestamp
             ~cover:(Cover.compute universe selection_packages) in
+        log "done";
         let current_timestamp =
           { switch_state.current_timestamp with head = Some cover_state } in
         Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
