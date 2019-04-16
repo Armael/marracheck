@@ -388,7 +388,7 @@ let () =
                 OpamRepositoryName.(to_string default)
           end;
           let sw =
-            OpamSwitchAction.set_current_switch `Lock_none gt ~rt switch_name in
+            OpamSwitchAction.set_current_switch `Lock_write gt ~rt switch_name in
           if OpamSwitchState.repos_list sw <> [OpamRepositoryName.default] then
             fatal "Switch %s: unexpected list of repositories (expected [%s])"
               (OpamSwitch.to_string switch_name)
