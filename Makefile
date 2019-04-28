@@ -1,8 +1,10 @@
+DUNE_BUILD=dune build --profile release
+
 all:
-	dune build src/compute_cover.exe
-	dune build src/worker.exe
-	dune build src/opam_bin_cache.exe
-	dune build src/marracheck.exe
+	$(DUNE_BUILD) src/compute_cover.exe
+	$(DUNE_BUILD) src/worker.exe
+	$(DUNE_BUILD) src/opam_bin_cache.exe
+	$(DUNE_BUILD) src/marracheck.exe
 
 top:
 	dune utop lib
