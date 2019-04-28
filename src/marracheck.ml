@@ -76,9 +76,10 @@ let init_opam_root ~workdir ~opamroot ~repo_url =
       ~completion:false
       (OpamStd.Sys.guess_shell_compat ()) in
   (* Write the binary cache script on disk *)
-  OpamSystem.write
-    File.(to_string Op.(OpamPath.hooks_dir opamroot // Cache_script.name))
-    (Cache_script.script ~workdir);
+  let script_file =
+    File.(to_string Op.(OpamPath.hooks_dir opamroot // Cache_script.name)) in
+  OpamSystem.write script_file (Cache_script.script ~workdir);
+  Unix.chmod script_file 0o777;
   ()
 
 let installable_with_compiler (u: universe) (compiler: package) =
