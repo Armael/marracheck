@@ -82,37 +82,36 @@ let init_opam_root ~workdir ~opamroot ~repo_url =
   Unix.chmod script_file 0o777;
   ()
 
-let installable_with_compiler (u: universe) (compiler: package) =
+let installable_with_base_packages (u: universe) =
   (* The universe comes from a switch in an unknown state, but with the correct
      repository.
 
-     This assumes that the [u_packages] and [u_available] fields are correct
-     (for the repository that is set currently), but more packages might be
-     installed and we do not want to rely on them.
+     We also know that the compiler we want is in the base packages of the
+     switch.
 
-     TODO: check that assumption in practice
+     Since the repository is correct, the [u_packages] and [u_available] fields
+     should be correct (for the repository that is set currently), but more
+     packages might be installed and we do not want to rely on them.
 
-     TODO: This universe is not valid (because the compiler has dependencies);
-     is this fine?
+     TODO: check that the universe of an old switch that was created with an old
+     repo gets up updated if we just update the repo. *)
 
-     TODO: check that the universe of an old switch that was created with an
-     old repo gets up updated if we just update the repo.
-  *)
-
-  (* TODO: replace this by calling the solver to get the actual set of base
-     packages that come with the compiler (see install_compiler_packages in
-     opamSwitchCommand.ml for inspiration) *)
-  (* let u = { u with u_installed = OpamPackage.Set.singleton compiler;
-   *                  u_installed_roots = OpamPackage.Set.singleton compiler;
-   *                  u_base = OpamPackage.Set.singleton compiler;
-   *                  u_pinned = OpamPackage.Set.empty;
-   *         } in *)
-  OpamSolver.installable u
+  (* Restrict installed packages to the set of base packages, as with a
+     fresh switch *)
+  let u = { u with u_installed = u.u_base;
+                   u_installed_roots =
+                     OpamPackage.Set.inter u.u_base u.u_installed_roots;
+                   u_pinned = OpamPackage.Set.empty;
+          } in
+  (* FIXME? if the [u_base] packages are left in the set, then the cover
+     computation finds they are uninstallable (resulting in an assertion failure
+     in compute, in state.ml)... *)
+  OpamPackage.Set.diff (OpamSolver.installable u) u.u_base
 
 let compute_package_selection (u: universe) (compiler: package)
   : package_selection -> OpamPackage.Set.t
   =
-  let allpkgs = installable_with_compiler u compiler in
+  let allpkgs = installable_with_base_packages u in
   function
   | `All -> allpkgs
   | `Revdeps _ | `List _ ->
@@ -392,13 +391,22 @@ let () =
                      (expected only \"%s\")"
                 OpamRepositoryName.(to_string default)
           end;
-          let sw =
-            OpamSwitchAction.set_current_switch `Lock_write gt ~rt switch_name in
-          if OpamSwitchState.repos_list sw <> [OpamRepositoryName.default] then
-            fatal "Switch %s: unexpected list of repositories (expected [%s])"
-              (OpamSwitch.to_string switch_name)
-              (OpamRepositoryName.(to_string default));
-          (OpamGlobalState.unlock gt, sw)
+          (* Reinstall the switch if the compiler is not one of the base
+             packages *)
+          let sw_base =
+            OpamSwitchState.with_ `Lock_none gt ~switch:switch_name
+              (fun sw -> sw.compiler_packages) in
+          if OpamPackage.Set.mem compiler sw_base then begin
+            let sw = OpamSwitchAction.set_current_switch
+                `Lock_write gt ~rt switch_name in
+            (OpamGlobalState.unlock gt, sw)
+          end else begin
+            log "Base packages of the switch do not include %s"
+              (OpamPackage.to_string compiler);
+            log "Creating a new switch instead";
+            let (sw, gt) = recreate_switch gt ~switch_name ~compiler in
+            (gt, sw)
+          end
         end else begin
           log "Creating new opam switch %s" compiler_variant;
           let (gt, sw) = create_new_switch gt ~switch_name ~compiler in
@@ -413,7 +421,9 @@ let () =
     OpamStateConfig.update ~current_switch:switch_name ();
     log "Using opam switch %s" (OpamSwitch.to_string switch_name);
 
-    (* we have a switch of the right name, attached to the right repository *)
+    (* we have a switch of the right name, attached to the right repository.
+       Installed packages in the switch include at least our compiler and
+       related base packages (there can also be other packages). *)
 
     (* Compute a set of packages from the user package selection.
        This depends on the universe, which is resolved below:
@@ -553,7 +563,10 @@ let () =
         OpamGlobalState.with_ `Lock_none @@ fun gt ->
         OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
         let reinstall_switch =
-          not (OpamPackage.Set.subset sw.installed (Lib.installable cover_elt))
+          not (OpamPackage.Set.subset
+                 sw.installed
+                 (OpamPackage.Set.union
+                    (Lib.installable cover_elt) sw.compiler_packages))
         in
         if reinstall_switch then begin
           if initial_iteration then
