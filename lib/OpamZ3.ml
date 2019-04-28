@@ -26,6 +26,9 @@ let default_criteria = {
    *                 -count[version-lag,changed],\
    *                 -changed"; *)
   crit_default = "-count[version-lag,changed],-new";
+
+  (* the other fields are dead code; see solverWrapper.ml:
+     when we use this solver we only pick [crit_default]. *)
   crit_upgrade = "-removed,\
                   -count[version-lag,solution],\
                   -new";

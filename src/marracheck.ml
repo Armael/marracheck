@@ -98,11 +98,15 @@ let installable_with_compiler (u: universe) (compiler: package) =
      TODO: check that the universe of an old switch that was created with an
      old repo gets up updated if we just update the repo.
   *)
-  let u = { u with u_installed = OpamPackage.Set.singleton compiler;
-                   u_installed_roots = OpamPackage.Set.singleton compiler;
-                   u_base = OpamPackage.Set.singleton compiler;
-                   u_pinned = OpamPackage.Set.empty;
-          } in
+
+  (* TODO: replace this by calling the solver to get the actual set of base
+     packages that come with the compiler (see install_compiler_packages in
+     opamSwitchCommand.ml for inspiration) *)
+  (* let u = { u with u_installed = OpamPackage.Set.singleton compiler;
+   *                  u_installed_roots = OpamPackage.Set.singleton compiler;
+   *                  u_base = OpamPackage.Set.singleton compiler;
+   *                  u_pinned = OpamPackage.Set.empty;
+   *         } in *)
   OpamSolver.installable u
 
 let compute_package_selection (u: universe) (compiler: package)
@@ -317,7 +321,7 @@ let () =
     (* Setup the opam-related global state *)
 
     OpamClientConfig.opam_init
-      ~solver:(lazy (module OpamZ3))
+      ~solver:(lazy (module SolverWrapper))
       ~best_effort:false
       ~root_dir:opamroot
       ~no_env_notice:true

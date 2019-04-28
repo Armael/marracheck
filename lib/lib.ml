@@ -34,12 +34,14 @@ let get_universe switch =
   }
 
 let make_request u packages =
+  SolverWrapper.use_custom_best_effort := true;
   let req =
     OpamSolver.request
       ~install:(OpamSolution.eq_atoms_of_packages packages)
       ()
   in
   let res = OpamSolver.resolve u ~orphans:OpamPackage.Set.empty req in
+  SolverWrapper.use_custom_best_effort := false;
   match res with
   | Success solution ->
     Ok solution
