@@ -2,9 +2,16 @@ open OpamTypes
 
 module Json = Ezjsonm
 
-let log fmt = Printf.fprintf stderr ("LOG: " ^^ fmt ^^ "\n%!")
+let t0 = Unix.gettimeofday ()
+let time () = Unix.gettimeofday () -. t0
+
+let log fmt =
+  Printf.fprintf stderr "LOG (%.2f): " (time ());
+  Printf.fprintf stderr (fmt ^^ "\n%!")
+
 let fatal fmt =
-  Printf.kfprintf (fun _ -> exit 1) stderr ("ERROR: " ^^ fmt ^^ "\n%!")
+  Printf.fprintf stderr "ERROR (%.2f): " (time ());
+  Printf.kfprintf (fun _ -> exit 1) stderr (fmt ^^ "\n%!")
 
 let mkdir dir =
   let dir = OpamFilename.Dir.to_string dir in

@@ -1,3 +1,5 @@
+open Utils
+
 (*
 pour setup from scratch:
 
@@ -46,8 +48,6 @@ let make_request u packages =
 
 let card = OpamPackage.Set.cardinal
 
-let t0 = Unix.gettimeofday ()
-
 type cover_elt = {
   solution: OpamSolver.solution;
   useful: OpamPackage.Set.t;
@@ -80,10 +80,10 @@ let version_weights all_packages : float OpamPackage.Map.t =
 let compute_cover u packages =
   let rec cover u acc to_install =
     Format.printf "%.2f: <to_install size: %d>\n%!"
-      (Unix.gettimeofday () -. t0) (List.length to_install);
+      (time ()) (List.length to_install);
     let to_install_s = OpamPackage.Set.of_list to_install in
     let solution = make_request u to_install_s in
-    Format.printf "%.2f: DONE  %!" (Unix.gettimeofday () -. t0);
+    Format.printf "%.2f: DONE  %!" (time ());
     match solution with
     | Ok solution ->
       let installable = OpamSolver.new_packages solution in
