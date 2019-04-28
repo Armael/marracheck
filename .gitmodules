@@ -1,0 +1,4 @@
+[submodule "opam"]
+	path = opam
+	url = git@github.com:Armael/opam.git
+	branch = marracheck
