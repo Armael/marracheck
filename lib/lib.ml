@@ -24,15 +24,6 @@ concernant les fichiers changes:
   |> OpamFile.Changes.read
 *)
 
-let get_universe switch =
-  let u = OpamSwitchState.universe switch
-      ~requested:OpamPackage.Name.Set.empty
-      OpamTypes.Query (* Louis: for historical reasons, should not matter nowadays *)
-  in
-  { u with u_installed = OpamPackage.Set.empty;
-           (* u_base = OpamPackage.Set.empty; *)
-  }
-
 let make_request u packages =
   SolverWrapper.use_custom_best_effort := true;
   let req =

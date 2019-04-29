@@ -3,13 +3,22 @@ open Marracheck_lib
 let log_inline fmt = Printf.eprintf (fmt ^^ "%!")
 let log fmt = Printf.eprintf (fmt ^^ "\n%!")
 
+
+let get_universe switch =
+  let u = OpamSwitchState.universe switch
+      ~requested:OpamPackage.Name.Set.empty
+      OpamTypes.Query (* Louis: for historical reasons, should not matter nowadays *)
+  in
+  { u with u_installed = u.u_base;
+  }
+
 let () =
   OpamClientConfig.opam_init
     ~solver:(lazy (module OpamZ3))
     ();
   let gs = OpamGlobalState.load `Lock_read in
   OpamSwitchState.with_ `Lock_read gs (fun switch ->
-    let u = Lib.get_universe switch in
+    let u = get_universe switch in
     let all_packages = OpamSolver.installable u in
     let all_names = OpamPackage.names_of_packages all_packages in
     let all_packages_last_version =
