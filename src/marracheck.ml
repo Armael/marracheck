@@ -115,6 +115,7 @@ let compute_package_selection (u: universe) (compiler: package)
   function
   | `All -> allpkgs
   | `Revdeps _ | `List _ ->
+    ignore compiler;
     assert false
 
 let universe ~sw =
