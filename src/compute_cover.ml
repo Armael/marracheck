@@ -1,5 +1,8 @@
 open Marracheck_lib
 
+let log_inline fmt = Printf.eprintf (fmt ^^ "%!")
+let log fmt = Printf.eprintf (fmt ^^ "\n%!")
+
 let () =
   OpamClientConfig.opam_init
     ~solver:(lazy (module OpamZ3))
@@ -14,21 +17,21 @@ let () =
       |> OSeq.map (OpamPackage.max_version all_packages)
       |> OpamPackage.Set.of_seq
     in
-    Printf.eprintf "all (installable) packages: %d\n%!" (Lib.card all_packages);
-    Printf.eprintf "all (installable) packages last version: %d\n%!"
+    log "all (installable) packages: %d" (Lib.card all_packages);
+    log "all (installable) packages last version: %d"
       (Lib.card all_packages_last_version);
 
     let (elts, uninst) = Lib.compute_cover u all_packages in
     CCIO.with_out Lib.dump_file (fun cout -> output_value cout (elts, uninst));
-    Printf.printf "\n";
+    log_inline "\n";
     List.iter (fun cover_elt ->
-      Printf.printf "(%d|%d) "
+      log_inline "(%d|%d) "
         (Lib.card (Lib.installable cover_elt))
         (Lib.card cover_elt.useful)
     ) elts;
-    Printf.printf "\n";
+    log_inline "\n";
     match uninst with
     | Ok () -> ()
     | Error uninst ->
-      Printf.printf "uninstallable: %d\n" (List.length uninst)
+      log "uninstallable: %d" (List.length uninst)
   )
