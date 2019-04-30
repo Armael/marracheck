@@ -295,9 +295,14 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
       working_dir opamroot_path in
 
   let compiler = get_or_fatal (validate_compiler_variant compiler_variant)
-      "Invalid compiler variant: %s" compiler_variant in
-  (* TODO: expand on what is accepted: ocaml-base-compiler.XXX or
-     ocaml-variants.XXX *)
+      "Invalid compiler variant: %s%t" compiler_variant
+      (fun ppf ->
+         let heuristic_variant = "ocaml-base-compiler."^compiler_variant in
+         match validate_compiler_variant heuristic_variant with
+         | None -> ()
+         | Some _ ->
+           Printf.fprintf ppf ".\nDid you mean %s?" heuristic_variant)
+  in
   assert (OpamPackage.to_string compiler = compiler_variant);
 
   let repo_url = get_or_fatal (validate_repo_url repo_url)
