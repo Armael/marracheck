@@ -23,6 +23,7 @@ depends: [
   "bos"
   "oseq"
   "containers"
+  "cmdliner"
   "ezjsonm" {>= "1.1.0"}
   "z3"
 ]
