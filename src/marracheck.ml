@@ -301,7 +301,9 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
          match validate_compiler_variant heuristic_variant with
          | None -> ()
          | Some _ ->
-           Printf.fprintf ppf ".\nDid you mean %s?" heuristic_variant)
+           Printf.fprintf ppf ".\nDid you mean %s or %s?"
+             heuristic_variant
+             ("ocaml-variants."^compiler_variant))
   in
   assert (OpamPackage.to_string compiler = compiler_variant);
 
