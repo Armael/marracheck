@@ -10,6 +10,7 @@ let is_present () = true
 
 let command_name = None
 
+(* https://github.com/sbjoshi/Open-WBO-Inc *)
 let solver_path = ref "open-wbo-inc_release"
 
 let default_criteria = {
