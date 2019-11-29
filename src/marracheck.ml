@@ -105,7 +105,12 @@ let installable_with_base_packages (u: universe) =
           } in
   (* FIXME? if the [u_base] packages are left in the set, then the cover
      computation finds they are uninstallable (resulting in an assertion failure
-     in compute, in state.ml)... *)
+     in compute, in state.ml)...
+
+     TODO: The solution is to properly handle pre-installed packages in the
+     cover computation. they do not appear in the "new packages" of the solution
+     (since they were already installed), and therefore currently are not
+     counted as installable... *)
   OpamPackage.Set.diff (OpamSolver.installable u) u.u_base
 
 let compute_package_selection (u: universe) (compiler: package)
@@ -360,8 +365,8 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
         let success, _changed, _rt =
           OpamClient.update gt ~repos_only:true ~dev_only:false [] in
         if not success then OpamStd.Sys.exit_because `Sync_error;
-        log "Done updating the repository."
-      end
+      end;
+      log "Done updating the repository.";
   end;
 
   (* We now have an initialized opamroot with an updated repository *)
@@ -402,6 +407,8 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
           log "Base packages of the switch do not include %s"
             (OpamPackage.to_string compiler);
           log "Creating a new switch instead";
+          (* TODO: at least warn that we are trashing whatever was in that
+             switch *)
           let (sw, gt) = recreate_switch gt ~switch_name ~compiler in
           (gt, sw)
         end

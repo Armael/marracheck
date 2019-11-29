@@ -14,8 +14,9 @@ let get_universe switch =
 
 let () =
   OpamClientConfig.opam_init
-    ~solver:(lazy (module OpamZ3))
+    ~solver:(lazy (module SolverWrapper))
     ();
+  SolverWrapper.solver := MaxSat;
   let gs = OpamGlobalState.load `Lock_read in
   OpamSwitchState.with_ `Lock_read gs (fun switch ->
     let u = get_universe switch in
