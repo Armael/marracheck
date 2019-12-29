@@ -345,7 +345,9 @@ let rec build_loop
         current_timestamp
       | Build_remaining to_install ->
         log "Computing the next element...";
+        SolverWrapper.solver := MaxSat;
         let elt, pkgs' = Lib.compute_cover_elt ~universe ~to_install in
+        SolverWrapper.solver := Default;
         let cover_state, msg =
           if OpamPackage.Set.is_empty elt.useful then
             { cover_state with
