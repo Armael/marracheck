@@ -287,7 +287,7 @@ module Cover_state = struct
       | Some elt -> `A [ Cover.cover_elt_to_json elt ] in
     let build_status_to_json = function
       | Build_remaining pkgs ->
-        `O [ "building_remaining", OpamPackage.Set.to_json pkgs ]
+        `O [ "build_remaining", OpamPackage.Set.to_json pkgs ]
       | Build_finished_with_uninst pkgs ->
         `O [ "build_finished_with_uninst", OpamPackage.Set.to_json pkgs ]
     in
