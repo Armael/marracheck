@@ -279,28 +279,6 @@ let retire_current_timestamp
       current_timestamp.git_repo
       File.Op.(past_timestamps / (cur_basename ^ "_" ^ timestamp_s))
 
-(* todo: refactor/rename this function *)
-(*
-let filtered_switch_universe (cover_state: Cover_state.t) =
-  let broken_packages =
-    cover_state.report.data
-    |> CCList.filter_map (function
-      | (pkg, Error _) -> Some pkg
-      | _ -> None)
-    |> OpamPackage.Set.of_list
-  in
-  filter_universe
-    (fun pkg -> not (OpamPackage.Set.mem pkg broken_packages))
-    (switch_universe ())
-*)
-
-(*
-let cover_pkgs (cover: Cover.t): package_set =
-  cover
-  |> List.map (fun elt -> elt.Lib.useful)
-  |> List.fold_left OpamPackage.Set.union OpamPackage.Set.empty
-*)
-
 (* Build loop:
    - compute the next element of the cover (if needed);
    - build all packages of this element;

@@ -192,11 +192,6 @@ module Cover_state = struct
   let already_built st =
     List.map fst st.report.data |> OpamPackage.Set.of_list
 
-(*  let initial_build_status ~cover =
-    if cover = [] then Build_finished
-    else Building_element 0
-*)
-
   let create ~dir ~timestamp ~packages =
     let open OpamFilename in
     { timestamp = { data = timestamp; path = Op.(dir // timestamp_path) };
