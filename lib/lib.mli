@@ -1,4 +1,4 @@
-val universe_exclude_cycles : OpamTypes.universe -> OpamTypes.universe
+(* val universe_exclude_cycles : OpamTypes.universe -> OpamTypes.universe *)
 
 type cover_elt = {
   solution: OpamSolver.solution;

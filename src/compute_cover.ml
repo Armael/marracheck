@@ -10,8 +10,8 @@ let get_universe switch =
       ~requested:OpamPackage.Name.Set.empty
       OpamTypes.Query (* Louis: for historical reasons, should not matter nowadays *)
   in
-  Lib.universe_exclude_cycles
-    { u with u_installed = u.u_base; }
+  (* Lib.universe_exclude_cycles *)
+  { u with u_installed = u.u_base; }
 
 let card = OpamPackage.Set.cardinal
 

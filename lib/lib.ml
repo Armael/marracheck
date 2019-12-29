@@ -32,6 +32,7 @@ let card = OpamPackage.Set.cardinal
    solutions, even though they will be rejected afterwards. So we compute the
    cycles upfront, and add them as conflicts to prevent them being picked by
    the solver. *)
+(*
 let universe_exclude_cycles (u: OpamTypes.universe): OpamTypes.universe =
   let open OpamTypes in
   let pkgs_in_cycles, cycles = OpamAdminCheck.cycle_check u in
@@ -50,6 +51,7 @@ let universe_exclude_cycles (u: OpamTypes.universe): OpamTypes.universe =
       { u with u_conflicts = OpamPackage.Map.add pkg f u.u_conflicts }
     ) pkgs u
   ) u cycles
+*)
 
 (******* *)
 
@@ -87,7 +89,6 @@ let make_request_ ~universe ~to_install =
   | Success solution ->
     Ok solution
   | Conflicts c ->
-(*
     (* TEMPORARY handle possible cycles in the solution *)
     let cycles = OpamCudf.conflict_cycles c in
     assert (cycles <> []);
@@ -104,8 +105,6 @@ let make_request_ ~universe ~to_install =
       |> List.sort_uniq OpamPackage.compare
     ) cycles in
     Error cycles
-*)
-    assert false
 
 let rec make_request ~universe ~to_install =
   (* TEMPORARY: handle cycles in the solution by turning them into conflicts
@@ -113,7 +112,6 @@ let rec make_request ~universe ~to_install =
   match make_request_ ~universe ~to_install with
   | Ok solution -> solution
   | Error cycles ->
-  (*
     log "Dependency cycle(s) in the solution";
     List.iter (fun l ->
       print_endline (
@@ -146,8 +144,6 @@ let rec make_request ~universe ~to_install =
     ) universe cycles in
     log "Restarting query after adding the cycles as conflicts";
     make_request ~universe ~to_install
-*)
-    assert false
 
 type cover_elt = {
   solution: OpamSolver.solution;

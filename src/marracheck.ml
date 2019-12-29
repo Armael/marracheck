@@ -105,7 +105,8 @@ let prepare_universe (u: universe): universe =
                      OpamPackage.Set.inter u.u_base u.u_installed_roots;
                    u_pinned = OpamPackage.Set.empty;
           } in
-  Lib.universe_exclude_cycles u
+  (* Lib.universe_exclude_cycles u *)
+  u
 
 (* Used to discard packages from the universe that we know are broken
    (e.g. do not build). *)
