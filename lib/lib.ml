@@ -26,6 +26,33 @@ concernant les fichiers changes:
 
 let card = OpamPackage.Set.cardinal
 
+(* Explicitly mark cyclic solutions as conflicts in the universe.
+
+   This is because a (e.g. boolean) solver will typically allow cyclic
+   solutions, even though they will be rejected afterwards. So we compute the
+   cycles upfront, and add them as conflicts to prevent them being picked by
+   the solver. *)
+let universe_exclude_cycles (u: OpamTypes.universe): OpamTypes.universe =
+  let open OpamTypes in
+  let pkgs_in_cycles, cycles = OpamAdminCheck.cycle_check u in
+  let cycles = List.map (fun cycle ->
+    match cycle with
+    | [] -> assert false
+    | f :: fs ->
+      let f_pkgs = OpamFormula.packages pkgs_in_cycles f in
+      let fs_formula =
+        List.fold_left (fun x y -> OpamFormula.And (x, y))
+          (List.hd fs) (List.tl fs) in
+      (f_pkgs, fs_formula)
+  ) cycles in
+  List.fold_left (fun u (pkgs, f) ->
+    OpamPackage.Set.fold (fun pkg u ->
+      { u with u_conflicts = OpamPackage.Map.add pkg f u.u_conflicts }
+    ) pkgs u
+  ) u cycles
+
+(******* *)
+
 let maxsat_time_budget_min = 1.
 let maxsat_time_budget_per_pkg = 0.005
 

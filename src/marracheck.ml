@@ -105,31 +105,7 @@ let prepare_universe (u: universe): universe =
                      OpamPackage.Set.inter u.u_base u.u_installed_roots;
                    u_pinned = OpamPackage.Set.empty;
           } in
-  (* Explicitly mark cyclic solutions as conflicts in the universe.
-
-     This is because a (e.g. boolean) solver will typically allow cyclic
-     solutions, even though they will be rejected afterwards. So we compute the
-     cycles upfront, and add them as conflicts to prevent them being picked by
-     the solver. *)
-  let pkgs_in_cycles, cycles = OpamAdminCheck.cycle_check u in
-  let cycles = List.map (fun cycle ->
-    match cycle with
-    | [] -> assert false
-    | f :: fs ->
-      let f_pkgs = OpamFormula.packages pkgs_in_cycles f in
-      let fs_formula =
-        List.fold_left (fun x y -> OpamFormula.And (x, y))
-          (List.hd fs) (List.tl fs) in
-      (f_pkgs, fs_formula)
-  ) cycles in
-  let u =
-    List.fold_left (fun u (pkgs, f) ->
-      OpamPackage.Set.fold (fun pkg u ->
-        { u with u_conflicts = OpamPackage.Map.add pkg f u.u_conflicts }
-      ) pkgs u
-    ) u cycles
-  in
-  u
+  Lib.universe_exclude_cycles u
 
 (* Used to discard packages from the universe that we know are broken
    (e.g. do not build). *)
