@@ -6,12 +6,12 @@ let t0 = Unix.gettimeofday ()
 let time () = Unix.gettimeofday () -. t0
 
 let log fmt =
-  Printf.fprintf stderr "LOG (%.2f): " (time ());
-  Printf.fprintf stderr (fmt ^^ "\n%!")
+  Format.fprintf Format.err_formatter "LOG (%.2f): " (time ());
+  Format.fprintf Format.err_formatter (fmt ^^ "\n%!")
 
 let fatal fmt =
-  Printf.fprintf stderr "ERROR (%.2f): " (time ());
-  Printf.kfprintf (fun _ -> exit 1) stderr (fmt ^^ "\n%!")
+  Format.fprintf Format.err_formatter "ERROR (%.2f): " (time ());
+  Format.kfprintf (fun _ -> exit 1) Format.err_formatter (fmt ^^ "\n%!")
 
 let mkdir dir =
   let dir = OpamFilename.Dir.to_string dir in
@@ -42,5 +42,5 @@ let must_succeed cmd res =
 
 let get_or_fatal opt fmt =
   match opt with
-  | Some x -> Printf.ikfprintf (fun _ -> x) stderr fmt
+  | Some x -> Format.ikfprintf (fun _ -> x) Format.err_formatter fmt
   | None -> fatal fmt

@@ -1,8 +1,9 @@
 open Marracheck_lib
 
+(* benchmark utility *)
+
 let log_inline fmt = Printf.eprintf (fmt ^^ "%!")
 let log fmt = Printf.eprintf (fmt ^^ "\n%!")
-
 
 let get_universe switch =
   let u = OpamSwitchState.universe switch
@@ -11,6 +12,8 @@ let get_universe switch =
   in
   { u with u_installed = u.u_base;
   }
+
+let card = OpamPackage.Set.cardinal
 
 let () =
   OpamClientConfig.opam_init
@@ -27,21 +30,19 @@ let () =
       |> OSeq.map (OpamPackage.max_version all_packages)
       |> OpamPackage.Set.of_seq
     in
-    log "all (installable) packages: %d" (Lib.card all_packages);
+    log "all (installable) packages: %d" (card all_packages);
     log "all (installable) packages last version: %d"
-      (Lib.card all_packages_last_version);
+      (card all_packages_last_version);
 
-    let (elts, uninst) = Lib.compute_cover u all_packages in
+    let (elts, uninst) =
+      Lib.compute_cover_batch ~universe:u ~packages:all_packages in
     CCIO.with_out Lib.dump_file (fun cout -> output_value cout (elts, uninst));
     log_inline "\n";
-    List.iter (fun cover_elt ->
+    List.iter (fun (cover_elt: Lib.cover_elt) ->
       log_inline "(%d|%d) "
-        (Lib.card (Lib.installable cover_elt))
-        (Lib.card cover_elt.useful)
+        (card (OpamSolver.new_packages cover_elt.solution))
+        (card cover_elt.useful)
     ) elts;
     log_inline "\n";
-    match uninst with
-    | Ok () -> ()
-    | Error uninst ->
-      log "uninstallable: %d" (List.length uninst)
+    log "uninstallable: %d" (card uninst)
   )

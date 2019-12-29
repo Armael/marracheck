@@ -14,6 +14,7 @@ let past_timestamps_path = "past_timestamps"
 (* Relative to a current_timestamp.git directory *)
 let timestamp_path = "timestamp"
 let cover_path = "cover.json"
+let cur_elt_path = "cur_elt.json"
 let report_path = "report.json"
 let build_status_path = "build_status.json"
 
@@ -145,94 +146,83 @@ let package_report_to_json = function
 module Cover = struct
   type t = Lib.cover_elt list
 
-  (* Allow some packages of the input selection to not be installable *)
-  let compute_with_uninst
-      (u : universe) (selection : OpamPackage.Set.t) :
-    t * package list =
-    let (cover, remain) = Lib.compute_cover u selection in
-    if OpamPackage.Set.is_empty selection then
-      assert (cover = []);
-    let uninst = match remain with
-      | Ok () -> []
-      | Error uninst -> uninst
-    in
-    cover, uninst
+  let cover_elt_of_json (j: Json.value): Lib.cover_elt =
+    try
+      let l = Json.get_dict j in
+      let get_opt = function Some x -> x | None -> raise Not_found in
+      Lib.{ solution =
+              OpamSolver.solution_of_json (List.assoc "solution" l)
+              |> get_opt;
+            useful =
+              OpamPackage.Set.of_json (List.assoc "useful" l) |> get_opt; }
+    with Not_found -> Json.parse_error `Null "" (* XX *)
 
-  let compute (u: universe) (selection: OpamPackage.Set.t): t =
-    let cover, uninst = compute_with_uninst u selection in
-    assert (uninst = []);
-    cover
+  let cover_elt_to_json elt =
+    `O [ ("solution", OpamSolver.solution_to_json elt.Lib.solution);
+         ("useful", OpamPackage.Set.to_json elt.Lib.useful) ]
 
   let of_json (j: Json.t): t =
-    let cover_elt_of_json j =
-      try
-        let l = Json.get_dict j in
-        let get_opt = function Some x -> x | None -> raise Not_found in
-        Lib.{ solution =
-                OpamSolver.solution_of_json (List.assoc "solution" l)
-                |> get_opt;
-              useful =
-                OpamPackage.Set.of_json (List.assoc "useful" l) |> get_opt; }
-      with Not_found -> Json.parse_error `Null "" (* XX *)
-    in
     Json.get_list cover_elt_of_json (Json.value j)
 
   let to_json (cover: t): Json.t =
-    let cover_elt_to_json elt =
-      `O [ ("solution", OpamSolver.solution_to_json elt.Lib.solution);
-           ("useful", OpamPackage.Set.to_json elt.Lib.useful) ]
-    in
     Json.list cover_elt_to_json cover
 end
 
 module Cover_state = struct
   type report = (OpamPackage.t * package_report) list
   type build_status =
-    | Building_element of int (* index of the cover element in the [Cover.t] *)
-    | Build_finished
+    | Build_remaining of OpamPackage.Set.t
+    | Build_finished_with_uninst of OpamPackage.Set.t
+
+  let eq_build_status st1 st2 =
+    match st1, st2 with
+    | Build_remaining s1, Build_remaining s2
+    | Build_finished_with_uninst s1, Build_finished_with_uninst s2 ->
+      OpamPackage.Set.equal s1 s2
+    | _ -> false
 
   type t = {
     timestamp : timestamp Serialized.t;
     cover : Cover.t Serialized.t;
+    cur_elt : Lib.cover_elt option Serialized.t;
     report : report Serialized.t;
     build_status : build_status Serialized.t;
   }
 
-  let initial_build_status ~cover =
+  let already_built st =
+    List.map fst st.report.data |> OpamPackage.Set.of_list
+
+(*  let initial_build_status ~cover =
     if cover = [] then Build_finished
     else Building_element 0
+*)
 
-  let create ~dir ~timestamp ~cover =
+  let create ~dir ~timestamp ~packages =
     let open OpamFilename in
     { timestamp = { data = timestamp; path = Op.(dir // timestamp_path) };
-      cover = { data = cover; path = Op.(dir // cover_path) };
+      cover = { data = []; path = Op.(dir // cover_path) };
+      cur_elt = { data = None; path = Op.(dir // cur_elt_path) };
       report = { data = []; path = Op.(dir // report_path) };
-      build_status = { data = initial_build_status ~cover;
+      build_status = { data = Build_remaining packages;
                       path = Op.(dir // build_status_path) };
     }
 
-  let update_cover ~cover st =
-    { st with
-      cover = { st.cover with data = cover };
-      build_status = { st.build_status with
-                       data = initial_build_status ~cover } }
+  let archive_cur_elt (st: t): t =
+    match st.cur_elt.data with
+    | None -> st
+    | Some elt ->
+      { st with
+        cover = { st.cover with data = elt :: st.cover.data };
+        cur_elt = { data = None; path = st.cur_elt.path } }
 
-  let go_to_next_elt (st: t): t =
-    match st.build_status.data with
-    | Build_finished ->
-      (* Be conservative *)
-      assert false
-    | Building_element id ->
-      assert (0 <= id && id < List.length st.cover.data);
-      let build_status =
-        if id = List.length st.cover.data - 1 then Build_finished
-        else Building_element (id + 1)
-      in
-      { st with build_status = { st.build_status with data = build_status } }
+  let set_remaining (remaining: OpamPackage.Set.t) (st: t): t =
+    { st with
+      build_status = { st.build_status with
+                       data = Build_remaining remaining } }
 
   let add_to_report report (st: t): t =
-    let (@) l l' = List.rev_append (List.rev l) l' in
-    { st with report = { st.report with data = st.report.data @ report } }
+    { st with report = { st.report
+                         with data = CCList.append report st.report.data } }
 
   (* This assumes that the files already exist on the filesystem in a valid
      state *)
@@ -255,14 +245,30 @@ module Cover_state = struct
         Json.Parse_error (_,_) ->
         fatal "In %s: invalid format"
           OpamFilename.(prettify Op.(dir // report_path)) in
-    let build_status_of_json = function
-      | `O [ "building_element", `Float id ] -> Building_element (truncate id)
-      | `O [ "build_finished", `Null ] -> Build_finished
-      | _ -> fatal "In %s: invalid format"
-               (OpamFilename.(prettify Op.(dir // build_status_path)))
+    let cur_elt_of_json j =
+      match j with
+      | `A [] -> None
+      | `A [ j' ] -> Some (Cover.cover_elt_of_json j')
+      | _ ->
+        fatal "In %s: invalid format"
+          OpamFilename.(prettify Op.(dir // cur_elt_path))
+    in
+    let build_status_of_json j =
+      let err () = fatal "In %s: invalid format"
+          (OpamFilename.(prettify Op.(dir // build_status_path))) in
+      try
+        begin match j with
+          | `O [ "build_remaining", pkgs ] ->
+            Build_remaining (get_opt (OpamPackage.Set.of_json pkgs))
+          | `O [ "build_finished_with_uninst", pkgs ] ->
+            Build_finished_with_uninst (get_opt (OpamPackage.Set.of_json pkgs))
+          | _ -> err ()
+        end with Json.Parse_error (_,_) -> err ()
     in
     { timestamp = Serialized.load_raw ~file:Op.(dir // timestamp_path);
       cover = Serialized.load_json ~file:Op.(dir // cover_path) Cover.of_json;
+      cur_elt = Serialized.load_json ~file:Op.(dir // cur_elt_path)
+          cur_elt_of_json;
       report =
         Serialized.load_json ~file:Op.(dir // report_path) report_of_json;
       build_status =
@@ -276,12 +282,18 @@ module Cover_state = struct
                ("report", package_report_to_json pkg_report) ]
       ) r
     in
+    let cur_elt_to_json = function
+      | None -> `A []
+      | Some elt -> `A [ Cover.cover_elt_to_json elt ] in
     let build_status_to_json = function
-      | Building_element id -> `O [ "building_element", `Float (float id) ]
-      | Build_finished -> `O [ "build_finished", `Null ]
+      | Build_remaining pkgs ->
+        `O [ "building_remaining", OpamPackage.Set.to_json pkgs ]
+      | Build_finished_with_uninst pkgs ->
+        `O [ "build_finished_with_uninst", OpamPackage.Set.to_json pkgs ]
     in
     Serialized.sync_raw state.timestamp;
     Serialized.sync_json state.cover Cover.to_json;
+    Serialized.sync_json state.cur_elt cur_elt_to_json;
     Serialized.sync_json state.report report_to_json;
     Serialized.sync_json state.build_status build_status_to_json
 end

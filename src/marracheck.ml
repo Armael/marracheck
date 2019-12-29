@@ -82,20 +82,22 @@ let init_opam_root ~workdir ~opamroot ~repo_url =
   Unix.chmod script_file 0o777;
   ()
 
-let installable_with_base_packages (u: universe) =
-  (* The universe comes from a switch in an unknown state, but with the correct
-     repository.
+(* Receive a universe coming from a switch in an unknown state, but with the
+   correct repository.
 
-     We also know that the compiler we want is in the base packages of the
-     switch.
+   Output a universe corresponding to an "empty switch" with base packages only,
+   and prepared for the rest of the operations.
 
-     Since the repository is correct, the [u_packages] and [u_available] fields
-     should be correct (for the repository that is set currently), but more
-     packages might be installed and we do not want to rely on them.
 
-     TODO: check that the universe of an old switch that was created with an old
-     repo gets up updated if we just update the repo. *)
+   We know that the compiler we want is in the base packages of the switch.
 
+   Since the repository is correct, the [u_packages] and [u_available] fields
+   should be correct (for the repository that is set currently), but more
+   packages might be installed and we do not want to rely on them.
+
+   TODO: check that the universe of an old switch that was created with an old
+   repo gets up updated if we just update the repo. *)
+let prepare_universe (u: universe): universe =
   (* Restrict installed packages to the set of base packages, as with a
      fresh switch *)
   let u = { u with u_installed = u.u_base;
@@ -103,25 +105,53 @@ let installable_with_base_packages (u: universe) =
                      OpamPackage.Set.inter u.u_base u.u_installed_roots;
                    u_pinned = OpamPackage.Set.empty;
           } in
-  (* FIXME? if the [u_base] packages are left in the set, then the cover
-     computation finds they are uninstallable (resulting in an assertion failure
-     in compute, in state.ml)...
+  (* Explicitly mark cyclic solutions as conflicts in the universe.
 
-     TODO: The solution is to properly handle pre-installed packages in the
-     cover computation. they do not appear in the "new packages" of the solution
-     (since they were already installed), and therefore currently are not
-     counted as installable... *)
-  OpamPackage.Set.diff (OpamSolver.installable u) u.u_base
+     This is because a (e.g. boolean) solver will typically allow cyclic
+     solutions, even though they will be rejected afterwards. So we compute the
+     cycles upfront, and add them as conflicts to prevent them being picked by
+     the solver. *)
+  let pkgs_in_cycles, cycles = OpamAdminCheck.cycle_check u in
+  let cycles = List.map (fun cycle ->
+    match cycle with
+    | [] -> assert false
+    | f :: fs ->
+      let f_pkgs = OpamFormula.packages pkgs_in_cycles f in
+      let fs_formula =
+        List.fold_left (fun x y -> OpamFormula.And (x, y))
+          (List.hd fs) (List.tl fs) in
+      (f_pkgs, fs_formula)
+  ) cycles in
+  let u =
+    List.fold_left (fun u (pkgs, f) ->
+      OpamPackage.Set.fold (fun pkg u ->
+        { u with u_conflicts = OpamPackage.Map.add pkg f u.u_conflicts }
+      ) pkgs u
+    ) u cycles
+  in
+  u
 
+(* Used to discard packages from the universe that we know are broken
+   (e.g. do not build). *)
+let filter_universe (p: OpamPackage.t -> bool) (u: universe): universe =
+  (* Hopefully it is enough to filter [u_available]?... *)
+  { u with
+    u_available = OpamPackage.Set.filter p u.u_available;
+    (* u_packages = OpamPackage.Set.filter p u.u_packages;
+     * u_installed = OpamPackage.Set.filter p u.u_installed; *)
+  }
+
+(* Assumes a clean universe *)
 let compute_package_selection (u: universe) (compiler: package)
   : package_selection -> OpamPackage.Set.t
   =
-  let allpkgs = installable_with_base_packages u in
+  (* NB: this is somewhat expensive to compute *)
+  let allpkgs = OpamSolver.installable u in
   function
   | `All -> allpkgs
   | `Revdeps _ | `Packages _ ->
     ignore compiler;
-    assert false
+    assert false (* TODO *)
 
 let universe ~sw =
   OpamSwitchState.universe sw ~requested:OpamPackage.Name.Set.empty
@@ -241,9 +271,11 @@ let process_solution_result (result: solution_result) =
     | `Change _ | `Reinstall _ | `Remove _ -> assert false
   ) in
   let aborted l = CCList.map (function
-    | `Build p | `Install p | `Fetch p -> p
+    | `Build p | `Install p | `Fetch p ->
+      p, Aborted { deps = OpamPackage.Set.empty (* TODO *) }
     | `Change _ | `Reinstall _ | `Remove _ -> assert false
-  ) l |> CCList.sort_uniq ~cmp:OpamPackage.compare
+  ) l
+  |> CCList.sort_uniq ~cmp:(fun (p,_) (q,_) -> OpamPackage.compare p q)
   in
   match result with
   | Aborted -> fatal "Aborted build"
@@ -270,13 +302,8 @@ let retire_current_timestamp
       current_timestamp.git_repo
       File.Op.(past_timestamps / (cur_basename ^ "_" ^ timestamp_s))
 
-let filter_universe (p: OpamPackage.t -> bool) (u: universe): universe =
-  (* It should be enough to remove the package from the "available" set.
-     TODO: test that this is the case (i.e. we don't try to build packages
-     that have been removed from this set. In particular, there should be
-     no cache hit for a "build failure".) *)
-  { u with u_available = OpamPackage.Set.filter p u.u_available }
-
+(* todo: refactor/rename this function *)
+(*
 let filtered_switch_universe (cover_state: Cover_state.t) =
   let broken_packages =
     cover_state.report.data
@@ -288,11 +315,142 @@ let filtered_switch_universe (cover_state: Cover_state.t) =
   filter_universe
     (fun pkg -> not (OpamPackage.Set.mem pkg broken_packages))
     (switch_universe ())
+*)
 
+(*
 let cover_pkgs (cover: Cover.t): package_set =
   cover
   |> List.map (fun elt -> elt.Lib.useful)
   |> List.fold_left OpamPackage.Set.union OpamPackage.Set.empty
+*)
+
+(* Build loop:
+   - compute the next element of the cover (if needed);
+   - build all packages of this element;
+   - archive it, and update the set of remaining packages;
+
+   Loop invariant:
+   - everything other than the opam switch and the cover state stays the
+     same (in particular, the current timestamp stays the same)
+   - the opam switch can contain some already installed packages
+   - we maintain and update a valid cover_state which contains the current
+     element, the old elements, the report of built packages, and the
+     remaining packages to build
+   - the universe is "clean": it corresponds to an empty switch with only
+     the base packages installed.
+     At the beginning of each loop iteration, we make sure to exclude from
+     the universe packages that did not build according to the report.
+*)
+let rec build_loop
+    ~(switch_name : switch)
+    ~(compiler : package)
+    ~(universe : universe)
+    (current_timestamp : Cover_state.t Versioned.t)
+  =
+  let cover_state = CCOpt.get_exn current_timestamp.head in
+  let broken_pkgs =
+    cover_state.report.data |> CCList.filter_map (fun (pkg, report) ->
+      match report with Error _ -> Some pkg | _ -> None
+    )
+    |> OpamPackage.Set.of_list
+  in
+  let universe =
+    filter_universe (fun p -> not (OpamPackage.Set.mem p broken_pkgs))
+      universe
+  in
+  match cover_state.cur_elt.data with
+  | None ->
+    begin match cover_state.build_status.data with
+      | Build_finished_with_uninst uninst ->
+        log "Finished building all packages of the selection \
+             (%d uninstallable packages)"
+          (OpamPackage.Set.cardinal uninst);
+        current_timestamp
+      | Build_remaining to_install ->
+        log "Computing the next element...";
+        let elt, pkgs' = Lib.compute_cover_elt ~universe ~to_install in
+        let cover_state, msg =
+          if OpamPackage.Set.is_empty elt.useful then
+            { cover_state with
+              build_status = { cover_state.build_status with
+                               data = Build_finished_with_uninst pkgs' } },
+            "No new element; build loop done"
+          else
+            { cover_state with
+              cur_elt = { cover_state.cur_elt with data = Some elt };
+              build_status = { cover_state.build_status with
+                               data = Build_remaining pkgs' } },
+            "New element computed"
+        in
+        let current_timestamp =
+          { current_timestamp with head = Some cover_state } in
+        Versioned.commit_new_head current_timestamp ~sync:Cover_state.sync msg;
+        build_loop ~switch_name ~compiler ~universe current_timestamp
+    end
+
+  | Some elt ->
+    let status_remaining =
+      match cover_state.build_status.data with
+      | Build_finished_with_uninst _ -> assert false
+      | Build_remaining pkgs -> pkgs
+    in
+
+    (* Are the packages currently installed in the opam switch compatible with
+       the current element? *)
+    OpamGlobalState.with_ `Lock_none @@ fun gt ->
+    OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
+    let elt_solution_installs = OpamSolver.new_packages elt.Lib.solution in
+    let reinstall_switch =
+      not (OpamPackage.Set.subset
+             sw.installed
+             (OpamPackage.Set.union
+                elt_solution_installs universe.u_installed))
+    in
+    if reinstall_switch then begin
+      log "Re-creating a fresh opam switch.";
+      let sw, gt =
+        OpamGlobalState.with_write_lock gt @@ fun gt ->
+        recreate_switch gt ~switch_name ~compiler in
+      OpamSwitchState.drop sw; OpamGlobalState.drop gt
+    end;
+
+    (* The cover element can now be built in the current opam switch *)
+
+    let pkgs_success, pkgs_error, pkgs_aborted =
+      OpamGlobalState.with_ `Lock_none @@ fun gs ->
+      OpamSwitchState.with_ `Lock_write gs @@ fun sw ->
+      let (sw, res) =
+        OpamSolution.apply sw
+          ~ask:false
+          ~requested:OpamPackage.Name.Set.empty
+          ~assume_built:false
+          elt.Lib.solution
+      in
+      OpamSwitchState.drop sw;
+      process_solution_result res
+    in
+
+    (* Update the cover state *)
+    let remaining =
+      OpamPackage.Set.(Op.(
+        status_remaining
+        -- (of_list (List.map fst pkgs_success))
+        -- (of_list (List.map fst pkgs_error))
+      )) in
+    let cover_state =
+      cover_state
+      |> Cover_state.add_to_report pkgs_success
+      |> Cover_state.add_to_report pkgs_error
+      |> Cover_state.add_to_report pkgs_aborted
+      |> Cover_state.set_remaining remaining
+      |> Cover_state.archive_cur_elt
+    in
+    let current_timestamp =
+      { current_timestamp with head = Some cover_state } in
+    Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
+      "Built the current cover element";
+    log "Finished building the current cover element";
+    build_loop ~switch_name ~compiler ~universe current_timestamp
 
 let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   let workdir = get_or_fatal (validate_workdir working_dir)
@@ -306,7 +464,7 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
          match validate_compiler_variant heuristic_variant with
          | None -> ()
          | Some _ ->
-           Printf.fprintf ppf ".\nDid you mean %s or %s?"
+           Format.fprintf ppf ".\nDid you mean %s or %s?"
              heuristic_variant
              ("ocaml-variants."^compiler_variant))
   in
@@ -426,7 +584,7 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   OpamStateConfig.update ~current_switch:switch_name ();
   log "Using opam switch %s" (OpamSwitch.to_string switch_name);
 
-  (* we have a switch of the right name, attached to the right repository.
+  (* We have a switch of the right name, attached to the right repository.
      Installed packages in the switch include at least our compiler and
      related base packages (there can also be other packages). *)
 
@@ -442,211 +600,116 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
     let view = Work_state.View_single.load_or_create compiler in
     Work_state.load_or_create ~view ~workdir in
   let switch_state = work_state.view in
-  let current_timestamp, universe, selection_to_build =
+  let universe = switch_universe () |> prepare_universe in
+  let current_timestamp =
     let repo_timestamp = get_repo_timestamp repo_url in
-    match switch_state.current_timestamp.head with
-    | Some cover_state ->
-      (* Is the cover_state timestamp matching the one of the repository?
-         If not, we need to retire the current_timestamp directory, and
-         create a new one after computing a new cover *)
-      if repo_timestamp <> cover_state.timestamp.data then begin
-        retire_current_timestamp
-          ~current_timestamp:switch_state.current_timestamp
-          ~past_timestamps:switch_state.past_timestamps;
+    let selection_packages = compute_selection_packages universe in
+    log "User packages selection includes %d packages"
+      (OpamPackage.Set.cardinal selection_packages);
+    let current_timestamp : Cover_state.t Versioned.t =
+      match switch_state.current_timestamp.head with
+      | Some cover_state when repo_timestamp = cover_state.timestamp.data ->
+        (* We might have been in the process of building packages from the
+           (current) last element of the cover, and we might want to reuse that
+           work.
+
+           - if we were in the middle of building packages for the current
+             last element of the cover, and the remaining packages are included
+             in the package selection, then continue;
+
+           - otherwise, just compute a new cover element for the current
+             package selection.
+        *)
+        log "Found an existing cover state for the current timestamp";
+        let already_built = Cover_state.already_built cover_state in
+        let selection_already_built =
+          OpamPackage.Set.inter already_built selection_packages in
+        let selection_remaining =
+          OpamPackage.Set.diff selection_packages already_built in
+
+        log "%d packages from the selection have already been built; \
+             remaining: %d"
+          (OpamPackage.Set.cardinal selection_already_built)
+          (OpamPackage.Set.cardinal selection_remaining);
+
+        (* Update [cover_state] with the selection packages *)
+        let cover_state, has_changed =
+          let is_resumable elt =
+            let open OpamPackage.Set in
+            let remaining = diff elt.Lib.useful already_built in
+            not (is_empty remaining) && subset remaining selection_remaining in
+          match cover_state.cur_elt.data with
+          | Some elt when is_resumable elt ->
+            log "Reusing the current cover element";
+            (* Update the remaining build packages according to the selection *)
+            let remaining =
+              OpamPackage.Set.diff selection_remaining elt.Lib.useful in
+            let cover_state' = Cover_state.set_remaining remaining cover_state in
+            let has_changed =
+              not (Cover_state.eq_build_status
+                     cover_state.build_status.data
+                     cover_state'.build_status.data) in
+            cover_state', has_changed
+          | _ ->
+            log "Discarding the current cover element";
+            (* NB: here we archive the current element even though it has only
+               been built partially (that's fine as long as we remember to
+               consider cover elements only as the output of the solver for
+               co-installable packages, not as the build log). *)
+            let cover_state = Cover_state.archive_cur_elt cover_state in
+            { cover_state with
+              build_status = { cover_state.build_status with
+                               data = Build_remaining selection_remaining } },
+            true
+        in
+
+        let current_timestamp =
+          { switch_state.current_timestamp with head = Some cover_state } in
+        if has_changed then
+          (* Avoid polluting the git history with identity commits *)
+          Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
+            "Update cover state";
+        current_timestamp
+
+      | _ ->
+        (* Start over with a fresh [current_timestamp] directory and fresh cover
+           state. *)
+        if switch_state.current_timestamp.head <> None then begin
+          log "Existing cover state is for an old repo timestamp";
+          (* There is an existing cover_state, but its timestamp does not match
+             the one of the repository. Retire the current_timestamp directory
+             before creating a new one *)
+          retire_current_timestamp
+            ~current_timestamp:switch_state.current_timestamp
+            ~past_timestamps:switch_state.past_timestamps;
+        end;
+        log "Initialize a fresh cover state";
+        (* This initializes a fresh [current_timestamp] directory; it contains
+           no data at this point (i.e. [current_timestamp.head = None]) *)
         let current_timestamp =
           Versioned.load_and_clean
             ~repo:switch_state.current_timestamp.git_repo
-            ~load:Cover_state.load in
-        let universe = switch_universe () in
-        let selection_packages = compute_selection_packages universe in
+            ~load:(fun ~dir:_ -> assert false (* there is no data to load *)) in
+        (* Add some data to the directory (the initial cover state for our
+           packages selection). *)
         let cover_state = Cover_state.create
             ~dir:switch_state.current_timestamp.git_repo
             ~timestamp:repo_timestamp
-            ~cover:(Cover.compute universe selection_packages) in
+            ~packages:selection_packages in
         let current_timestamp =
           { current_timestamp with head = Some cover_state } in
         Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
-          "Initial cover";
-        current_timestamp, universe, selection_packages
-      end else begin
-        (* If we are currently building a cover, avoid recomputing it if
-           the selection matches what the cover is computing.
-
-           That is, ["useful" packages of the cover] = packages selection.
-
-           If not, compute a new cover (without the packages of the selection
-           that we already built, in this cover or even before). *)
-        let already_built =
-          List.map fst cover_state.report.data
-          |> OpamPackage.Set.of_list in
-        (* Only consider the cover elements that remain to be built *)
-        let cover_pkgs_to_build =
-          cover_pkgs @@ match cover_state.build_status.data with
-          | Building_element id -> CCList.drop id cover_state.cover.data
-          | Build_finished -> []
-        in
-        let universe = filtered_switch_universe cover_state in
-        let selection_packages = compute_selection_packages universe in
-        let selection_to_build =
-          OpamPackage.Set.diff selection_packages already_built in
-
-        log "User package selection includes %d packages,\
-             %d have already been processed"
-          (OpamPackage.Set.cardinal selection_packages)
-          (OpamPackage.Set.cardinal already_built);
-
-        if OpamPackage.Set.equal selection_to_build cover_pkgs_to_build then
-          let () = log "Reusing the current cover for the selection" in
-          switch_state.current_timestamp, universe, selection_to_build
-        else
-          (* Recompute a cover for the remaining packages of the selection to
-             build *)
-          let () = log "Computing a new cover for the new selection" in
-          let cover_state =
-            Cover_state.update_cover
-              ~cover:(Cover.compute universe selection_to_build) cover_state
-          in
-          let current_timestamp =
-            { switch_state.current_timestamp with head = Some cover_state } in
-          Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
-            "New packages selection: compute a new cover";
-          current_timestamp, universe, selection_to_build
-      end
-    | None ->
-      (* There is no pre-existing cover. Compute a fresh one. *)
-      log "Computing the switch universe";
-      let universe = switch_universe () in
-      log "Computing the selection of packages";
-      let selection_packages = compute_selection_packages universe in
-      log "Computing the cover state";
-      let cover_state = Cover_state.create
-          ~dir:switch_state.current_timestamp.git_repo
-          ~timestamp:repo_timestamp
-          ~cover:(Cover.compute universe selection_packages) in
-      log "done";
-      let current_timestamp =
-        { switch_state.current_timestamp with head = Some cover_state } in
-      Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
-        "Initial cover";
-      current_timestamp, universe, selection_packages
+          "Initial cover state";
+        current_timestamp
+    in
+    current_timestamp
   in
-  log "%d new packages to build"
-    (OpamPackage.Set.cardinal selection_to_build);
 
   (* An adequate cover_state has been fetched or created. *)
 
-  (* Build loop: builds all elements a cover (possibly recomputing it whenever
-     broken packages are found)
-
-     Loop invariant:
-     - everything other than the opam switch and the cover state stays the
-       same (in particular, the current timestamp stays the same)
-     - the opam switch can contain some already installed packages
-     - there is a valid cover_state which contains the current cover to build
-  *)
-
-  let rec build_loop
-      (initial_iteration : bool)
-      (universe : universe)
-      (current_timestamp : Cover_state.t Versioned.t)
-    =
-    let cover_state = CCOpt.get_exn current_timestamp.head in
-    match cover_state.build_status.data with
-    | Build_finished ->
-      log "Finished building all packages of the selection";
-      current_timestamp
-    | Building_element cover_elt_id ->
-      (* Are the packages currently installed in the opam switch compatible with
-         the current cover_state? (are they included in the current cover
-         element?) *)
-      let cover_elt =
-        try List.nth cover_state.cover.data cover_elt_id
-        with Failure _ ->
-          fatal "In %s: invalid id (out of bounds)\n"
-            (OpamFilename.prettify cover_state.build_status.path)
-      in
-      OpamGlobalState.with_ `Lock_none @@ fun gt ->
-      OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
-      let reinstall_switch =
-        not (OpamPackage.Set.subset
-               sw.installed
-               (OpamPackage.Set.union
-                  (Lib.installable cover_elt) sw.compiler_packages))
-      in
-      if reinstall_switch then begin
-        if initial_iteration then
-          log "Note: unwanted packages are currently installed...";
-        log "Re-creating the opam switch.";
-        let sw, gt =
-          OpamGlobalState.with_write_lock gt @@ fun gt ->
-          recreate_switch gt ~switch_name ~compiler in
-        OpamSwitchState.drop sw; OpamGlobalState.drop gt
-      end;
-
-      (* The cover element can now be built in the current opam switch *)
-
-      let pkgs_success, pkgs_error, pkgs_aborted =
-        OpamGlobalState.with_ `Lock_none @@ fun gs ->
-        OpamSwitchState.with_ `Lock_write gs @@ fun sw ->
-        let (sw, res) =
-          OpamSolution.apply sw
-            ~ask:false
-            ~requested:OpamPackage.Name.Set.empty
-            ~assume_built:false
-            cover_elt.Lib.solution
-        in
-        OpamSwitchState.drop sw;
-        process_solution_result res
-      in
-
-      let universe, cover_state, msg =
-        let cover_state =
-          cover_state
-          |> Cover_state.add_to_report pkgs_success
-          |> Cover_state.add_to_report pkgs_error
-        in
-        if pkgs_error = [] then begin
-          assert (pkgs_aborted = []);
-          (* Go to the next cover element *)
-          let cover_state = Cover_state.go_to_next_elt cover_state in
-          universe, cover_state,
-          "Cover element build successful; going to next element"
-        end else begin
-          let pkgs_error_s =
-            List.map fst pkgs_error |> OpamPackage.Set.of_list in
-          (* Recompute the cover, adding the aborted packages, and remove
-             the packages that failed from the universe *)
-          let universe = filter_universe
-              (fun pkg -> not (OpamPackage.Set.mem pkg pkgs_error_s))
-              universe
-          in
-          let pkgs =
-            OpamPackage.Set.union
-              (cover_pkgs (CCList.drop cover_elt_id cover_state.cover.data))
-              (OpamPackage.Set.of_list pkgs_aborted)
-          in
-          let cover, uninst = Cover.compute_with_uninst universe pkgs in
-          let cover_state =
-            cover_state
-            |> Cover_state.add_to_report
-              (List.map (fun p ->
-                 (* TODO(?): deps *)
-                 p, Aborted { deps = OpamPackage.Set.empty }) uninst)
-            |> Cover_state.update_cover ~cover
-          in
-          universe, cover_state,
-          "Cover element build terminated with some failures, recomputing \
-           a new cover for the rest of the packages"
-        end
-      in
-      let current_timestamp =
-        { switch_state.current_timestamp with head = Some cover_state } in
-      Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp msg;
-      log "%s" msg;
-      build_loop false universe current_timestamp
+  let _current_timestamp =
+    build_loop ~switch_name ~compiler ~universe current_timestamp
   in
-
-  let _current_timestamp = build_loop true universe current_timestamp in
   ()
 
 let cache_cmd () =
@@ -715,7 +778,7 @@ let run_term =
         printf "revdeps(%a)" print_packages packages
     in
     let parser input =
-      Printf.eprintf "parser %S\n%!" input;
+      Format.eprintf "parser %S\n%!" input;
       let module R = Containers.Result in
       let parse_package package_string =
         match OpamPackage.of_string_opt package_string with
