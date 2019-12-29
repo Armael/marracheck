@@ -60,7 +60,7 @@ module Versioned = struct
       let msg = if msg = "" then "-" else msg in
       Job.of_list [
         command ~dir:repo_s "git" [ "add"; "*"; ];
-        command ~dir:repo_s "git" [ "commit"; "-a"; "-m"; msg ];
+        command ~dir:repo_s "git" [ "commit"; "-a"; "--allow-empty"; "-m"; msg ];
       ] |> Job.run
       |> OpamStd.Option.iter (fun (cmd, res) -> must_succeed cmd res)
 end
