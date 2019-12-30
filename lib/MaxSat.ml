@@ -34,8 +34,13 @@ let xrmap f l =
 
 open OpamStd.Option.Op
 
-let def_packages (_preamble, universe, _request) :
-  (int list, [`RW]) Vec.t * (Cudf.package -> int option) * (int -> Cudf.package) * int
+let def_packages
+    (cycles : Cudf.package list list list)
+    (_preamble, universe, _request) :
+  (int list, [`RW]) Vec.t *
+  (Cudf.package -> int option) *
+  (int -> Cudf.package) *
+  int
   =
   let pkg_table : (Cudf.package, int) Hashtbl.t = Hashtbl.create 4000 in
   let pkg_rev_table : (int, Cudf.package) Hashtbl.t = Hashtbl.create 4000 in
@@ -89,6 +94,37 @@ let def_packages (_preamble, universe, _request) :
       )
     ) pkg.Cudf.conflicts;
   ) universe;
+
+  (* exclude cycles *)
+  (* the boolean formula for excluding a cycle is:
+
+     ¬ (P1 /\ P2 /\ .. /\ Pn)
+     <=>
+     (¬P1 \/ ¬P2 \/ .. \/ ¬Pn)
+
+     where P1..Pn are in fact sets of packages, so disjunctions:
+
+     (¬(P11 \/ P12 \/ .. \/ P1m) \/ ... \/ ¬(Pn1 \/ .. \/ Pnm)
+     <=>
+     ((¬P11 /\ ¬P12 /\ .. /\ ¬P1m) \/ .. \/ (¬Pn1 /\ .. /\ ¬Pnm))
+
+     i.e. a formula in disjunctive normal form (DNF).
+
+     We therefore need to turn it into CNF...
+  *)
+  let rec cnf = function
+    | [] -> [[]]
+    | cycle :: cycles ->
+      let cycles' = cnf cycles in
+      CCList.flat_map (fun pkg ->
+        List.map (fun cl -> pkg :: cl) cycles'
+      ) cycle
+  in
+  List.iter (fun cycle ->
+    List.iter (fun cl ->
+      Vec.push clauses (List.map (fun pkg -> - (pkg_id_exn pkg)) cl)
+    ) (cnf cycle);
+  ) cycles;
 
   clauses, pkg_id, pkg_of_id, (!fresh_id - 1)
 
@@ -163,7 +199,7 @@ let spawn_lwt ~timeout (cmd: string) =
     stdout >>= (fun stdout ->
       Lwt.return (ret_code, stdout)))
 
-let call_solver ~timeout pkg_of_id hard_clauses soft_clauses max_id =
+let call_solver ~time_budget pkg_of_id hard_clauses soft_clauses max_id =
   let open Lwt.Infix in
   let filename, cout = Filename.open_temp_file "marracheck-maxsat" "" in
 
@@ -186,7 +222,8 @@ let call_solver ~timeout pkg_of_id hard_clauses soft_clauses max_id =
 
   let (_ret, stdout) =
     Lwt_main.run @@
-    spawn_lwt ~timeout (Printf.sprintf "%s %s" !solver_path filename)
+    spawn_lwt ~timeout:time_budget
+      (Printf.sprintf "%s %s" !solver_path filename)
   in
   OpamSystem.remove_file filename;
 
@@ -207,13 +244,8 @@ let call_solver ~timeout pkg_of_id hard_clauses soft_clauses max_id =
     log "Incorrect solver output";
     exit 1
 
-let call ~criteria ?timeout (preamble, universe, request as cudf) =
-  let timeout = CCOpt.get_lazy (fun () ->
-    log "MaxSat needs a time budget";
-    raise Exit
-  ) timeout in
-
-  let hard_clauses, pkg_id, pkg_of_id, max_id = def_packages cudf in
+let inner_call ~time_budget ~cycles (preamble, universe, request as cudf) =
+  let hard_clauses, pkg_id, pkg_of_id, max_id = def_packages cycles cudf in
   let soft_clauses = Vec.create () in
 
   let expand_constraint (name, constr) =
@@ -238,7 +270,7 @@ let call ~criteria ?timeout (preamble, universe, request as cudf) =
           Vec.push soft_clauses ([-i], `Normal 1)
       done;
 
-      call_solver ~timeout pkg_of_id hard_clauses soft_clauses max_id
+      call_solver ~time_budget pkg_of_id hard_clauses soft_clauses max_id
     )
     |> CCOpt.get_lazy (fun () ->
       log "(!!) nothing to install";
@@ -246,3 +278,12 @@ let call ~criteria ?timeout (preamble, universe, request as cudf) =
     )
   in
   Some preamble, u'
+
+(* In order to satisfy the opam solver API *)
+let call ~criteria ?timeout cudf =
+  let time_budget = CCOpt.get_lazy (fun () ->
+    log "MaxSat needs a time budget";
+    raise Exit
+  ) timeout in
+
+  inner_call ~time_budget ~cycles:[](*!*) cudf

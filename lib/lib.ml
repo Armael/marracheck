@@ -32,8 +32,9 @@ let card = OpamPackage.Set.cardinal
    solutions, even though they will be rejected afterwards. So we compute the
    cycles upfront, and add them as conflicts to prevent them being picked by
    the solver. *)
-(*
-let universe_exclude_cycles (u: OpamTypes.universe): OpamTypes.universe =
+(* This does not work: conflict formulas are expected to be purely disjunctions,
+   both at the level of opam universes and cudf universes. *)
+let _universe_exclude_cycles (u: OpamTypes.universe): OpamTypes.universe =
   let open OpamTypes in
   let pkgs_in_cycles, cycles = OpamAdminCheck.cycle_check u in
   let cycles = List.map (fun cycle ->
@@ -48,102 +49,16 @@ let universe_exclude_cycles (u: OpamTypes.universe): OpamTypes.universe =
   ) cycles in
   List.fold_left (fun u (pkgs, f) ->
     OpamPackage.Set.fold (fun pkg u ->
-      { u with u_conflicts = OpamPackage.Map.add pkg f u.u_conflicts }
+      let conflicts =
+        match OpamPackage.Map.find_opt pkg u.u_conflicts with
+        | None -> OpamPackage.Map.add pkg f u.u_conflicts
+        | Some f' -> OpamPackage.Map.add pkg (OpamFormula.Or (f, f')) u.u_conflicts
+      in
+      { u with u_conflicts = conflicts }
     ) pkgs u
   ) u cycles
-*)
 
-(******* *)
-
-let maxsat_time_budget_min = 1.
-let maxsat_time_budget_per_pkg = 0.005
-
-(* Solver-specific hackery goes here *)
-let make_request_ ~universe ~to_install =
-  if !SolverWrapper.solver = MaxSat then begin
-    let time_budget =
-      maxsat_time_budget_min +.
-      maxsat_time_budget_per_pkg *. (float (card to_install)) in
-    log "time budget: %f" time_budget;
-    OpamSolverConfig.update ~solver_timeout:(Some time_budget) ()
-  end;
-  let res =
-    match !SolverWrapper.solver with
-    | SolverWrapper.Z3_lp | Z3_wmax | MaxSat ->
-      let req =
-        OpamSolver.request
-          ~install:(OpamSolution.eq_atoms_of_packages to_install)
-          () in
-      OpamSolver.resolve universe ~orphans:OpamPackage.Set.empty req
-
-    | SolverWrapper.Default | Z3_default ->
-      let req = OpamSolver.request () in
-      let u = { universe with u_attrs = ["opam-query", to_install] } in
-      let best_effort_setting = (!OpamSolverConfig.r).best_effort in
-      OpamSolverConfig.update ~best_effort:true ();
-      let res = OpamSolver.resolve u ~orphans:OpamPackage.Set.empty req in
-      OpamSolverConfig.update ~best_effort:best_effort_setting ();
-      res
-  in
-  match res with
-  | Success solution ->
-    Ok solution
-  | Conflicts c ->
-    (* TEMPORARY handle possible cycles in the solution *)
-    let cycles = OpamCudf.conflict_cycles c in
-    assert (cycles <> []);
-    let cycles = List.map (fun l ->
-      List.map (fun s ->
-        (* FIXME: disgusting hack *)
-        let i = ref 0 in
-        let is_alpha c =
-          Char.code c >= Char.code 'a' && Char.code c <= Char.code 'z' in
-        while not (is_alpha s.[!i]) do incr i done;
-        let s' = String.sub s !i (String.length s - !i) in
-        OpamPackage.of_string s'
-      ) l
-      |> List.sort_uniq OpamPackage.compare
-    ) cycles in
-    Error cycles
-
-let rec make_request ~universe ~to_install =
-  (* TEMPORARY: handle cycles in the solution by turning them into conflicts
-     and restarting the query *)
-  match make_request_ ~universe ~to_install with
-  | Ok solution -> solution
-  | Error cycles ->
-    log "Dependency cycle(s) in the solution";
-    List.iter (fun l ->
-      print_endline (
-        OpamStd.Format.pretty_list ~last:","
-          (List.map OpamPackage.to_string l)
-      )
-    ) cycles;
-
-    let universe = List.fold_left (fun u cycle ->
-      match cycle with
-      | p1 :: (_ :: _ as ps) ->
-        let conflicts = u.OpamTypes.u_conflicts in
-        let cycle_conflict =
-          OpamFormula.of_conjunction
-            (List.map (fun p ->
-               OpamPackage.name p, Some (`Eq, OpamPackage.version p))
-               ps)
-        in
-        let p1_conflicts =
-          try
-            let f = OpamPackage.Map.find p1 conflicts in
-            OpamFormula.Or (f, cycle_conflict)
-          with Not_found ->
-            cycle_conflict
-        in
-        { u with
-          u_conflicts = OpamPackage.Map.add p1 p1_conflicts conflicts }
-      | _ ->
-        assert false
-    ) universe cycles in
-    log "Restarting query after adding the cycles as conflicts";
-    make_request ~universe ~to_install
+(********)
 
 type cover_elt = {
   solution: OpamSolver.solution;
@@ -155,7 +70,7 @@ let pp_cover_elt_stats fmt { solution; useful } =
     (card (OpamSolver.new_packages solution))
     (card useful)
 
-let compute_cover_elt ~universe ~to_install =
+let compute_cover_elt ~make_request ~universe ~to_install =
   log "compute_cover_elt: to_install size = %d" (card to_install);
   let solution = make_request ~universe ~to_install in
   log "DONE";
@@ -169,22 +84,140 @@ let compute_cover_elt ~universe ~to_install =
      eventually counted as uninstallable (they never occur in the "new packages"
      of a solution since they're already installed...). *)
   let remaining = OpamPackage.Set.Op.(
-    (to_install -- solution_installs) -- universe.u_installed
+    (to_install -- solution_installs) -- universe.OpamTypes.u_installed
   ) in
   log "remaining: %d" (card remaining);
   elt, remaining
 
-(* Only used for benchmarking solver backends *)
-let compute_cover_batch ~universe ~packages =
-  let rec loop elts to_install =
-    let elt, remaining = compute_cover_elt ~universe ~to_install in
-    if OpamPackage.Set.is_empty elt.useful then begin
-      (* We are done, the remaining packages are uninstallable *)
-      assert (OpamPackage.Set.equal to_install remaining);
-      List.rev elts, remaining
-    end else
-      loop (elt :: elts) remaining
-  in
-  loop [] packages
-
 let dump_file = "last_run.dump"
+
+(*********)
+
+let maxsat_time_budget_min = 1.
+let maxsat_time_budget_per_pkg = 0.005
+
+let maxsat_time_budget nb_pkgs =
+  maxsat_time_budget_min +.
+  maxsat_time_budget_per_pkg *. (float nb_pkgs)
+
+(****************)
+(* Copy-paste (after some simplification) from opamSolver.ml *)
+
+let constraint_to_cudf version_map name (op, v) =
+  let nv = OpamPackage.create name v in
+  try Some (op, OpamPackage.Map.find nv version_map)
+  with Not_found ->
+    (* Hopefully this doesn't happen according to the comment in opamSolver.ml
+       *)
+    assert false
+
+let name_to_cudf name =
+  Common.CudfAdd.encode (OpamPackage.Name.to_string name)
+
+let atom2cudf _universe (version_map : int OpamPackage.Map.t) (name,cstr) =
+  name_to_cudf name,
+  OpamStd.Option.Op.(cstr >>= constraint_to_cudf version_map name)
+
+let map_request f r =
+  let open OpamTypes in
+  let f = List.rev_map f in
+  { wish_install = f r.wish_install;
+    wish_remove  = f r.wish_remove;
+    wish_upgrade = f r.wish_upgrade;
+    criteria = r.criteria;
+    extra_attributes = r.extra_attributes; }
+
+let opamcudf_remove universe name constr =
+  let filter p =
+    p.Cudf.package <> name
+    || not (Cudf.version_matches p.Cudf.version constr) in
+  let packages = Cudf.get_packages ~filter universe in
+  Cudf.load_universe packages
+
+(** Special package used by Dose internally, should generally be filtered out *)
+let dose_dummy_request = Algo.Depsolver.dummy_request.Cudf.package
+
+(****************)
+
+let make_request_maxsat ~cycles ~universe ~to_install =
+  let request = OpamSolver.request
+      ~install:(OpamSolution.eq_atoms_of_packages to_install) () in
+  let time_budget = maxsat_time_budget (card to_install) in
+
+  (* Morally: OpamCudf.resolve ~extern:true *)
+  let opamcudf_resolve ~cycles ~version_map univ req =
+    (* Translate cycles to the cudf level, using the version map *)
+    let cycles : Cudf.package list list list =
+      CCList.filter_map (fun cycle ->
+        let cudf_cycle =
+          List.map (fun pkgs ->
+            (* A set of pkgs represents a disjunction. It is ok to drop
+               non-existent packages; if the disjunction becomes vacuous, then we
+               can remove the cycle completely. *)
+            OpamPackage.Set.fold (fun pkg acc ->
+              match OpamPackage.Map.find_opt pkg version_map with
+              | None -> acc
+              | Some ver ->
+                let pkgname = OpamPackage.name_to_string pkg in
+                match Cudf.lookup_package univ (pkgname, ver) with
+                | exception Not_found -> acc
+                | cudf_pkg -> cudf_pkg :: acc
+            ) pkgs []
+          ) cycle in
+        if List.for_all ((<>) []) cudf_cycle then Some cudf_cycle else None
+      ) cycles
+    in
+
+    let get_final_universe () =
+      let cudf_request = OpamCudf.to_cudf univ req in
+      if Cudf.universe_size univ > 0 then
+        let call_solver cudf = MaxSat.inner_call ~cycles ~time_budget cudf in
+        try
+          let r =
+            Algo.Depsolver.check_request_using ~call_solver
+              ~explain:true cudf_request in
+          r
+        with
+        | Failure msg ->
+          raise (OpamCudf.Solver_failure ("Solver failure: " ^ msg))
+        | e ->
+          OpamStd.Exn.fatal e;
+          let msg =
+            Printf.sprintf "Solver failed: %s" (Printexc.to_string e) in
+          raise (OpamCudf.Solver_failure msg)
+      else
+        Algo.Depsolver.Sat (None, Cudf.load_universe [])
+    in
+    match get_final_universe () with
+    | Algo.Depsolver.Sat (_,u) ->
+      OpamTypes.Success (opamcudf_remove u dose_dummy_request None)
+    | Algo.Depsolver.Error str -> fatal "Solver error: %s" str
+    | Algo.Depsolver.Unsat _ -> assert false
+  in
+
+  (* Morally:
+     [OpamSolver.resolve univers ~orphans:OpamPackage.Set.empty req] *)
+  let open OpamTypes in
+  let open OpamPackage.Set.Op in
+  let all_packages = universe.u_available ++ universe.u_installed in
+  let version_map = OpamSolver.cudf_versions_map universe all_packages in
+  let univ_gen = OpamSolver.load_cudf_universe universe ~version_map all_packages in
+  let simple_universe = univ_gen ~build:true ~post:true () in
+  let cudf_request = map_request (atom2cudf universe version_map) request in
+  let resolve u req =
+    try
+      let resp = opamcudf_resolve ~cycles ~version_map u req in
+      OpamCudf.to_actions (fun u -> u) u resp
+    with OpamCudf.Solver_failure msg ->
+      OpamConsole.error_and_exit `Solver_failure "%s" msg
+  in
+  match resolve simple_universe cudf_request with
+  | Conflicts _ -> fatal "conflicts in the solution"
+  | Success actions ->
+    let simple_universe = univ_gen ~depopts:true ~build:false ~post:false () in
+    let complete_universe = univ_gen ~depopts:true ~build:true ~post:false () in
+    try
+      let s = OpamCudf.atomic_actions ~simple_universe ~complete_universe actions in
+      (Obj.magic s : OpamSolver.solution) (* XXXX *)
+    with OpamCudf.Cyclic_actions cycles ->
+      assert false

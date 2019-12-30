@@ -118,6 +118,12 @@ let filter_universe (p: OpamPackage.t -> bool) (u: universe): universe =
      * u_installed = OpamPackage.Set.filter p u.u_installed; *)
   }
 
+let compute_universe_cycles (u: universe): OpamPackage.Set.t list list =
+  let pkgs, cycles = OpamAdminCheck.cycle_check u in
+  List.map (fun cycle ->
+    List.map (fun f -> OpamFormula.packages pkgs f) cycle
+  ) cycles
+
 (* Assumes a clean universe *)
 let compute_package_selection (u: universe) (compiler: package)
   : package_selection -> OpamPackage.Set.t
@@ -300,6 +306,7 @@ let rec build_loop
     ~(switch_name : switch)
     ~(compiler : package)
     ~(universe : universe)
+    ~(universe_cycles : OpamPackage.Set.t list list)
     (current_timestamp : Cover_state.t Versioned.t)
   =
   let cover_state = CCOpt.get_exn current_timestamp.head in
@@ -323,9 +330,10 @@ let rec build_loop
         current_timestamp
       | Build_remaining to_install ->
         log "Computing the next element...";
-        SolverWrapper.solver := MaxSat;
-        let elt, pkgs' = Lib.compute_cover_elt ~universe ~to_install in
-        SolverWrapper.solver := Default;
+        let elt, pkgs' =
+          Lib.compute_cover_elt
+            ~make_request:(Lib.make_request_maxsat ~cycles:universe_cycles)
+            ~universe ~to_install in
         let cover_state, msg =
           if OpamPackage.Set.is_empty elt.useful then
             { cover_state with
@@ -342,7 +350,8 @@ let rec build_loop
         let current_timestamp =
           { current_timestamp with head = Some cover_state } in
         Versioned.commit_new_head current_timestamp ~sync:Cover_state.sync msg;
-        build_loop ~switch_name ~compiler ~universe current_timestamp
+        build_loop ~switch_name ~compiler ~universe ~universe_cycles
+          current_timestamp
     end
 
   | Some elt ->
@@ -407,7 +416,8 @@ let rec build_loop
     Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
       "Built the current cover element";
     log "Finished building the current cover element";
-    build_loop ~switch_name ~compiler ~universe current_timestamp
+    build_loop ~switch_name ~compiler ~universe ~universe_cycles
+      current_timestamp
 
 let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   let workdir = get_or_fatal (validate_workdir working_dir)
@@ -438,7 +448,6 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   (* Setup the opam-related global state *)
 
   OpamClientConfig.opam_init
-    ~solver:(lazy (module SolverWrapper))
     ~best_effort:false
     ~root_dir:opamroot
     ~no_env_notice:true
@@ -558,6 +567,10 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
     Work_state.load_or_create ~view ~workdir in
   let switch_state = work_state.view in
   let universe = switch_universe () |> prepare_universe in
+  log "Computing cycles in the packages universe...";
+  let universe_cycles = compute_universe_cycles universe in
+  log "Done";
+
   let current_timestamp =
     let repo_timestamp = get_repo_timestamp repo_url in
     let selection_packages = compute_selection_packages universe in
@@ -664,8 +677,9 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
 
   (* An adequate cover_state has been fetched or created. *)
 
-  let _current_timestamp =
-    build_loop ~switch_name ~compiler ~universe current_timestamp
+  let _current_timestamp : Cover_state.t Versioned.t =
+    build_loop ~switch_name ~compiler ~universe ~universe_cycles
+      current_timestamp
   in
   ()
 
