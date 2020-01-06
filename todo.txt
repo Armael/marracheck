@@ -1,0 +1,81 @@
+- Bug: le cache d'installation ne marche visiblement pas (on compile donc
+  plusieurs fois les paquets qui sont installés plusieurs fois dans des cover
+  elements différents)
+
+- Bug: des paquets dont la compilation a échoué sont marqués comme "aborted"
+  dans le report, et donc on re-essaye de les compiler à chaque fois.
+
+  -> vérifier que la build loop termine même bien si ceci arrive
+
+- Bug: le build de certains paquets (notamment ocamlbuild et ocamlfind (!))
+  échoue, alors qu'il réussit en situation "normale" (ie j'ai un switch opam
+  dans lequel j'ai réussi à les installer).
+
+  Ça pourrait être des échecs non deterministes dans le build, mais le fait que
+  ça soit des paquets très utilisés tend à indiquer que ce n'est pas le cas (et
+  en l'occurence marracheck essayait bien d'installer la dernière version
+  disponible, pas une version exotique).
+
+- le temps de "build" d'un paquet semble dominé par l'étape d'install (pourtant,
+  j'ai un SSD, qui a peut être des I/O nulles mais quand même...), où on copie
+  des fichiers du dossier où ils ont été build
+  (opamroot/<switch>/.opam-switch/build/<paquet.version>/...) jusqu'au dossier
+  où ils doivent être installés (opamroot/<switch>/lib/<paquet>/...).
+
+  Je ne suis pas certain qu'on puisse vraiment s'économiser la copie (c'est
+  pratique de garder sur le côté le dossier dans lequel le build a été fait,
+  pour pouvoir debugger des problèmes; et on a besoin que les fichiers soient
+  proprement installés pour les autres paquets qui en dépendent).
+
+  Par contre on aimerait que la copie se fasse en temps négligeable puisque on
+  copie effectivement juste les fichiers à l'identique. Idées pour ça :
+
+  1) utiliser un système de fichiers qui fait du copy-on-write (COW). Sous linux,
+    BtrFS gère ça, mais après une recherche google, ce n'est pas automagique.
+    Notamment, si on utilise cp, il faut passer l'option --reflink=auto (ou
+    --reflink=always mais dans ce cas ça échoue si le système de fichier
+    sous-jacent ne supporte pas le COW...).
+
+    Opam actuellement utilise "install" pour copier les fichiers, qui n'a pas
+    l'air d'avoir d'option équivalente à --reflink... quelle est la différence
+    entre cp et install?..
+
+  2) on pourrait remplacer le install par un (hard)link. Ça change un peu la
+   sémantique du système de fichiers dans opamroot/ (en particulier, on ne peut
+   plus aller dans le répartoire de build et le bidouiller sans casser
+   l'installation; mais bon de toute façon a priori on ne va pas faire ça : on
+   va tout build, et ensuite debug. Après le build d'un cover elt, on met tout
+   le switch à la poubelle actuellement de toute façon.)
+
+
+
+  2) semble la solution la plus simple actuellement, et ensuite on pourra
+  réfléchir un peu plus à comment on permet à l'utilisateur de debugger un build
+  qui échoue ; l'inconvénient c'est qu'il faut patcher opam d'une manière qui
+  n'est probablement pas upstreamable (?) car change subtilement la sémantique
+  du filesytem (pas facile de voir qu'il y a des hardlinks...).
+
+
+- amélioration potentielle dans opam: plus d'incrémentalité pour l'opération de
+  décompression des sources.
+
+  Si on fait "opam install X1..Xn", opam commence par télécharger les sources
+  pour X1..Xn (ça ok, il y a un download cache), et ensuite les décompresser
+  (chaque archive est décompressée dans
+  opamroot/<switch>/.opam-switch/sources/<paquet.version>).
+
+  Même si toutes les archives sont dans le cache, ça prend pas mal de temps
+  (parce que beaucoup d'I/O disque).
+
+  Le problème : si on tue opam avec Ctrl-C au milieu de cette phase, les source
+  décompressées ne sont pas réutilisées. Opam commence par supprimer le dossier
+  avec les sources décompressées s'il existe avant de décompresser l'archive.
+
+  Pour être plus incrémental tout en étant aussi safe, une idée serait de
+  mémoriser un peu plus d'informations dans l'état du switch, sous la forme d'un
+  mapping <dossier contenant des sources extraites> -> <hash de l'archive>.
+  Comme ça, on peut commencer par consulter ce mapping avant de décompresser une
+  archive, pour savoir si les sources qu'on a déjà dans le dossier correspondent
+  en fait à cette archive.
+
+  Je pense qu'on peut déjà proposer cette amélioration comme PR dans opam
