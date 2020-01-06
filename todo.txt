@@ -79,3 +79,14 @@
   en fait à cette archive.
 
   Je pense qu'on peut déjà proposer cette amélioration comme PR dans opam
+
+- Optim: côté marracheck, on pourrait garder en cache le calcul des cycles de
+  l'univers, associé au current timestamp. actuellement on le recalcul à chaque
+  invocation, et ça prend ~10s.
+
+- Optim: je ne sais pas si c'est côté opam ou côté marracheck. On fait "opam
+  update" au début de chaque invocation de marracheck. Ça prend ~20s même si
+  rien n'a changé. Ça serait bien d'optimiser ça; soit ne pas faire opam update
+  si on voit que le timestamp du opam-repo n'a pas changé, soit optimiser opam
+  pour que opam update soit + rapide si on voit que l'état du repo n'a rien
+  changé.
