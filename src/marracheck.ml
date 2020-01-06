@@ -519,22 +519,22 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
               OpamRepositoryName.(to_string default)
         end;
         (* Reinstall the switch if the compiler is not one of the base
-           packages *)
-        let sw_base =
+           packages, or if it is not installed *)
+        let sw_base_installed =
           OpamSwitchState.with_ `Lock_none gt ~switch:switch_name
-            (fun sw -> sw.compiler_packages) in
-        if OpamPackage.Set.mem compiler sw_base then begin
+            (fun sw ->
+               OpamPackage.Set.inter
+                 sw.compiler_packages sw.installed) in
+        if not (OpamPackage.Set.mem compiler sw_base_installed) then begin
+          log "Either the compiler %s is not installed or not in the \
+               base packages of the switch" (OpamPackage.to_string compiler);
+          log "Creating a new switch instead";
+          let (sw, gt) = recreate_switch gt ~switch_name ~compiler in
+          (gt, sw)
+        end else begin
           let sw = OpamSwitchAction.set_current_switch
               `Lock_write gt ~rt switch_name in
           (OpamGlobalState.unlock gt, sw)
-        end else begin
-          log "Base packages of the switch do not include %s"
-            (OpamPackage.to_string compiler);
-          log "Creating a new switch instead";
-          (* TODO: at least warn that we are trashing whatever was in that
-             switch *)
-          let (sw, gt) = recreate_switch gt ~switch_name ~compiler in
-          (gt, sw)
         end
       end else begin
         log "Creating new opam switch %s" compiler_variant;
