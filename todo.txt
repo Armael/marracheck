@@ -16,6 +16,20 @@
   en l'occurence marracheck essayait bien d'installer la dernière version
   disponible, pas une version exotique).
 
+  EDIT: sur un deuxième run, ocamlbuild et ocamlfind compilent comme il faut...
+  je ne sais qu'en penser.
+
+  EDIT: peut être lié à un problème où un ^C pendant l'initialisation du switch
+  mène à un état bizarre où on continue avec un compilateur pas ou
+  partiellement installé...   (notamment, pas de ocamlc dans bin/)
+
+  j'ai fait un patch qui s'assure de recréer le switch si le compilo n'est pas
+  installé, c'est mieux, mais pas sûr que ça suffise dans l'absolu... faut-il
+  tester explicitement si ocamlc est là pour être sûr ?
+
+- Bug: ocamlfind marqué comme "aborted" dans le report.json, alors que le log
+  dit qu'il a été installé avec succès...
+
 - le temps de "build" d'un paquet semble dominé par l'étape d'install (pourtant,
   j'ai un SSD, qui a peut être des I/O nulles mais quand même...), où on copie
   des fichiers du dossier où ils ont été build
@@ -47,6 +61,8 @@
    va tout build, et ensuite debug. Après le build d'un cover elt, on met tout
    le switch à la poubelle actuellement de toute façon.)
 
+   (attention, ln foo bar n'est pas équivalent à install foo bar dans le cas où
+   bar existe déjà (dans ce cas, ln échoue et install remplace))
 
 
   2) semble la solution la plus simple actuellement, et ensuite on pourra
@@ -90,3 +106,26 @@
   si on voit que le timestamp du opam-repo n'a pas changé, soit optimiser opam
   pour que opam update soit + rapide si on voit que l'état du repo n'a rien
   changé.
+
+- glitch mineur: si on a fini un run, on fait "discarding the current cover
+  element", on le recalcule, pour s'apercevoir qu'il est vide et que c'est fini.
+  Pourtant on devrait être capable de le savoir directement à partir de l'état.
+
+- Amélioration ? (incrémentalité): quand on fait "apply solution" (ie un gros
+  opam install de plein de paquets), c'est actuellement un appel de fonction
+  monolithique, et le report.json n'est pas écrit au fur et à mesure. Il ne sera
+  donc pas updaté tant qu'on arrive pas à la fin du build de l'élément.
+
+  Serait-il possible de le mettre à jour au fur et à mesure ? Ou peut être
+  d'attraper ^C et de l'écrire à ce moment là en récupérant les informations sur
+  le build partiel ?
+
+- optim: on peut essayer de profiter du COW également lors de l'invocation à cp
+  qui sert à copier les sources du répertoire où elles ont été décompressées,
+  vers le répertoire de build
+  (faire un hardlink semble encore plus hasardeux ici)
+
+- optim: il me semble qu'actuellement, même si un paquet est présent dans le
+  cache de build, alors on va quand même télécharger l'archive des sources et la
+  décompresser (et la copier dans le répertoire de build ?), alors que ce n'est
+  pas nécessaire.
