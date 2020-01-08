@@ -1,7 +1,3 @@
-- Bug: le cache d'installation ne marche visiblement pas (on compile donc
-  plusieurs fois les paquets qui sont installés plusieurs fois dans des cover
-  elements différents)
-
 - Bug: des paquets dont la compilation a échoué sont marqués comme "aborted"
   dans le report, et donc on re-essaye de les compiler à chaque fois.
 

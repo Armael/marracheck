@@ -20,13 +20,16 @@ let init_opam_root ~workdir ~opamroot ~repo_url =
       | None -> f
       | Some f' -> FAnd (f', f)
     in
-    CCList.flat_map (fun (cmd, filter) ->
-      match hook_filter with
-      | None -> [(hook_cmd @ cmd, filter)]
-      | Some hook_filter ->
-        [hook_cmd @ cmd, Some (fand filter hook_filter);
-         cmd, Some (fand filter (FNot hook_filter))]
-    ) cmds
+    if cmds = [] then
+      [(hook_cmd, hook_filter)]
+    else
+      CCList.flat_map (fun (cmd, filter) ->
+        match hook_filter with
+        | None -> [(hook_cmd @ cmd, filter)]
+        | Some hook_filter ->
+          [hook_cmd @ cmd, Some (fand filter hook_filter);
+           cmd, Some (fand filter (FNot hook_filter))]
+      ) cmds
   in
   let s x = CString x, None in
   let i x = CIdent x, None in
