@@ -125,3 +125,13 @@
   cache de build, alors on va quand même télécharger l'archive des sources et la
   décompresser (et la copier dans le répertoire de build ?), alors que ce n'est
   pas nécessaire.
+
+- bug: le résultat du "opam update" fait par marracheck semble ne pas être
+  synthronisé sur le disque: si on fait OPAMROOT=workdir/opamroot opam list -a
+  il n'y a rien; et si on fait un opam update à la main alors c'est bon
+
+- pas sûr que le failure cache soit une bonne idée: si l'utilisateur a oublié de
+  brancher l'internet, il va avoir plein d'échecs, brancher l'internet, relancer
+  l'outil; mais tous les échecs sont mémorisés. On ne s'appuie pas vraiment sur
+  le cache d'échecs (on utilise le report.json plutôt), donc autant l'enlever
+  pour moins de surprises ?

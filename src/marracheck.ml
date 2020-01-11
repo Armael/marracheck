@@ -238,12 +238,13 @@ let build_log_of_exn exn =
 
 let process_solution_result (result: solution_result) =
   let successes = CCList.filter_map (function
-    | `Build p ->
-      (* The action itself is not very relevant since everything
-         suceeded. It could be `Install or `Fetch as well. *)
+    | `Install p ->
       (* FIXME: how do we get the build logs? *)
       Some (p, Success { log = ["TODO"]; changes = Changes })
-    | `Install _ | `Fetch _ -> None
+    | `Build _ | `Fetch _ ->
+      (* Build and Fetch are dependencies of Install, so they must have succeded
+         if Install did succeed *)
+      None
     | `Change _ | `Reinstall _ | `Remove _ -> assert false
   ) in
   let failures = CCList.map (fun (action, exn) ->
@@ -464,6 +465,7 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
       log "Initializing a fresh opam root in %s..."
         (OpamFilename.prettify_dir opamroot);
       init_opam_root ~workdir ~opamroot ~repo_url;
+      (* FIXME: if ^C during init_opam_root -> present but corrupted opam root *)
       log "Done initializing a fresh opam root"
     | true ->
       (* Yes: do "opam update" *)
