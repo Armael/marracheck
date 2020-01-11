@@ -28,7 +28,7 @@ case $COMMAND in
         NAME=$1; shift
         if [ -d "$SUCCESS_CACHE" ]; then
             rm -f "$NAME.install"
-            cp -aT "$SUCCESS_CACHE/" "$OPAM_SWITCH_PREFIX/"
+            cp --reflink=auto -aT "$SUCCESS_CACHE/" "$OPAM_SWITCH_PREFIX/"
         else
             # This is the first time we built this package.
             # Continue without error: restore is followed by install.
@@ -61,7 +61,7 @@ case $COMMAND in
                     mkdir -p "$SUCCESS_CACHE/$f"
                 else
                     mkdir -p "$(dirname "$SUCCESS_CACHE/$f")"
-                    cp -aT "$OPAM_SWITCH_PREFIX/$f" "$SUCCESS_CACHE/$f"
+                    cp --reflink=auto -aT "$OPAM_SWITCH_PREFIX/$f" "$SUCCESS_CACHE/$f"
                 fi
             done
         fi;;
