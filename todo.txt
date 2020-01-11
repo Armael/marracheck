@@ -26,6 +26,14 @@
 - Bug: ocamlfind marqué comme "aborted" dans le report.json, alors que le log
   dit qu'il a été installé avec succès...
 
+  EDIT: en fait il avait bien été aborted. Ce qui est étonnant c'est
+  qu'il a peu de dépendances. Mon diagnostic: ocamlfind a graphics en
+  dépendances optionnelle, et si on fait "opam install graphics
+  ocamlfind", et que la compilation de graphics échoue, alors la
+  dépendance optionelle ocamlfind -> graphics est considérée comme
+  "dure" et la compilation d'ocamlfind est annulée.
+  ça semble raisonnable.
+
 - le temps de "build" d'un paquet semble dominé par l'étape d'install (pourtant,
   j'ai un SSD, qui a peut être des I/O nulles mais quand même...), où on copie
   des fichiers du dossier où ils ont été build
@@ -67,6 +75,20 @@
   n'est probablement pas upstreamable (?) car change subtilement la sémantique
   du filesytem (pas facile de voir qu'il y a des hardlinks...).
 
+
+  EDIT: après benchmarks préliminaires je ne suis plus convaincu que
+  c'est vraiment autant un problème que ça. On peut en effet chercher
+  à optimiser les I/O, mais je ne suis pas certain qu'on y gagne plus
+  que de l'ordre de 20%. Et faire ça rigoureusement n'est pas facile
+  (il y a beaucoup de variables à controller), donc à remettre à plus
+  tard IMO.
+
+- optim: on peut essayer de profiter du COW également lors de l'invocation à cp
+  qui sert à copier les sources du répertoire où elles ont été décompressées,
+  vers le répertoire de build
+  (faire un hardlink semble encore plus hasardeux ici)
+
+  EDIT: pareil, optimisation prématurée ici
 
 - amélioration potentielle dans opam: plus d'incrémentalité pour l'opération de
   décompression des sources.
@@ -116,11 +138,6 @@
   d'attraper ^C et de l'écrire à ce moment là en récupérant les informations sur
   le build partiel ?
 
-- optim: on peut essayer de profiter du COW également lors de l'invocation à cp
-  qui sert à copier les sources du répertoire où elles ont été décompressées,
-  vers le répertoire de build
-  (faire un hardlink semble encore plus hasardeux ici)
-
 - optim: il me semble qu'actuellement, même si un paquet est présent dans le
   cache de build, alors on va quand même télécharger l'archive des sources et la
   décompresser (et la copier dans le répertoire de build ?), alors que ce n'est
@@ -135,3 +152,6 @@
   l'outil; mais tous les échecs sont mémorisés. On ne s'appuie pas vraiment sur
   le cache d'échecs (on utilise le report.json plutôt), donc autant l'enlever
   pour moins de surprises ?
+
+- ya t-il un timeout sur le "curl" pour chercher les sources d'un
+  paquet ? gles3 prend très longtemps (à cause des sources inaccessibles)

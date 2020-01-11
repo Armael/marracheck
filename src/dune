@@ -7,3 +7,8 @@
   (name opam_bin_cache)
   (modules opam_bin_cache)
   (libraries bos fpath rresult))
+
+(executable
+  (name list_installed)
+  (modules list_installed)
+  (libraries yojson marracheck_lib containers))
