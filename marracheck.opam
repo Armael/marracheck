@@ -26,6 +26,7 @@ depends: [
   "cmdliner"
   "ezjsonm" {>= "1.1.0"}
   "z3"
+  "lwt"
 ]
 pin-depends: [
   ["opam-client.2.0.0" "git+https://github.com/Armael/opam#marracheck"]
