@@ -5,12 +5,21 @@ module Json = Ezjsonm
 let t0 = Unix.gettimeofday ()
 let time () = Unix.gettimeofday () -. t0
 
+let timestamp fmt () =
+  let time = Unix.gettimeofday () -. t0 in
+  let tm = Unix.gmtime time in
+  let msec = time -. (floor time) in
+  Format.fprintf fmt "%.2d:%.2d.%.3d"
+    (tm.Unix.tm_hour * 60 + tm.Unix.tm_min)
+    tm.Unix.tm_sec
+    (int_of_float (1000.0 *. msec))
+
 let log fmt =
-  Format.fprintf Format.err_formatter "LOG (%.2f): " (time ());
+  Format.fprintf Format.err_formatter "LOG %a: " timestamp ();
   Format.fprintf Format.err_formatter (fmt ^^ "\n%!")
 
 let fatal fmt =
-  Format.fprintf Format.err_formatter "ERROR (%.2f): " (time ());
+  Format.fprintf Format.err_formatter "ERROR %a: " timestamp ();
   Format.kfprintf (fun _ -> exit 1) Format.err_formatter (fmt ^^ "\n%!")
 
 let mkdir dir =

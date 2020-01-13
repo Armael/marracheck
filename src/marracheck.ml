@@ -686,6 +686,7 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
     build_loop ~switch_name ~compiler ~universe ~universe_cycles
       current_timestamp
   in
+  log "Done";
   ()
 
 let cache_cmd () =
