@@ -223,7 +223,7 @@ let call_solver ~time_budget pkg_of_id hard_clauses soft_clauses max_id =
   let (_ret, stdout) =
     Lwt_main.run @@
     spawn_lwt ~timeout:time_budget
-      (Printf.sprintf "%s %s" !solver_path filename)
+      (Printf.sprintf "exec %s %s" !solver_path filename)
   in
   OpamSystem.remove_file filename;
 
