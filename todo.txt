@@ -155,3 +155,7 @@
 
 - ya t-il un timeout sur le "curl" pour chercher les sources d'un
   paquet ? gles3 prend très longtemps (à cause des sources inaccessibles)
+
+- au début créer le switch vide au lieu de le demander avec un
+  compilateur, pour pouvoir commencer à télécharger avant d'avoir
+  buildé le compilo (plus de parallélisme)
