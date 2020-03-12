@@ -334,21 +334,22 @@ let rec build_loop
         current_timestamp
       | Build_remaining to_install ->
         log "Computing the next element...";
-        let elt, pkgs' =
+        let elt, remaining =
           Lib.compute_cover_elt
             ~make_request:(Lib.make_request_maxsat ~cycles:universe_cycles)
             ~universe ~to_install in
         let cover_state, msg =
-          if OpamPackage.Set.is_empty elt.useful then
+          if OpamPackage.Set.is_empty elt.useful then begin
+            assert (OpamPackage.Set.equal to_install remaining);
             { cover_state with
               build_status = { cover_state.build_status with
-                               data = Build_finished_with_uninst pkgs' } },
+                               data = Build_finished_with_uninst remaining } },
             "No new element; build loop done"
-          else
+          end else
             { cover_state with
               cur_elt = { cover_state.cur_elt with data = Some elt };
               build_status = { cover_state.build_status with
-                               data = Build_remaining pkgs' } },
+                               data = Build_remaining remaining } },
             "New element computed"
         in
         let current_timestamp =
