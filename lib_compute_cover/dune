@@ -1,5 +1,5 @@
 (library
   (name marracheck_lib_computer_cover)
   (libraries opam-state opam-solver opam-client
-             oseq containers ezjsonm lwt.unix
+             oseq containers lwt.unix
              z3 marracheck_lib))

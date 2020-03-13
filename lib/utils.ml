@@ -2,6 +2,23 @@ open OpamTypes
 
 module Json = Ezjsonm
 
+let rec value_of_yojson = function
+  | `Bool b -> `Bool b
+  | `Float x -> `Float x
+  | `Int n -> `Float (float_of_int n)
+  | `Null -> `Null
+  | `String s -> `String s
+  | `Assoc assoc -> `O (List.map (fun (k, v) -> (k, value_of_yojson v)) assoc)
+  | `List li -> `A (List.map value_of_yojson li)
+
+let rec yojson_of_value = function
+  | `Bool b -> `Bool b
+  | `Float x -> `Float x
+  | `Null -> `Null
+  | `String s -> `String s
+  | `O assoc -> `Assoc (List.map (fun (k, v) -> (k, yojson_of_value v)) assoc)
+  | `A li -> `List (List.map yojson_of_value li)
+
 let t0 = Unix.gettimeofday ()
 let time () = Unix.gettimeofday () -. t0
 

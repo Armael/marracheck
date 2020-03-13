@@ -315,9 +315,9 @@ let rec build_loop
   =
   let cover_state = CCOpt.get_exn current_timestamp.head in
   let broken_pkgs =
-    cover_state.report.data |> CCList.filter_map (fun (pkg, report) ->
-      match report with Error _ -> Some pkg | _ -> None
-    )
+    SerializedLog.items cover_state.report
+    |> CCList.filter_map (fun (pkg, report) ->
+         match report with Error _ -> Some pkg | _ -> None)
     |> OpamPackage.Set.of_list
   in
   let universe =
@@ -410,9 +410,9 @@ let rec build_loop
       )) in
     let cover_state =
       cover_state
-      |> Cover_state.add_to_report pkgs_success
-      |> Cover_state.add_to_report pkgs_error
-      |> Cover_state.add_to_report pkgs_aborted
+      |> Cover_state.add_items_to_report pkgs_success
+      |> Cover_state.add_items_to_report pkgs_error
+      |> Cover_state.add_items_to_report pkgs_aborted
       |> Cover_state.set_remaining remaining
       |> Cover_state.archive_cur_elt
     in

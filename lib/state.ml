@@ -57,12 +57,13 @@ module Versioned = struct
     | None -> assert false
     | Some data ->
       let data = sync data in
+      let msg = if msg = "" then "-" else msg in
       let () =
-        let msg = if msg = "" then "-" else msg in
         Job.of_list [
-            command ~dir:repo_s "git" [ "add"; "*"; ];
-            command ~dir:repo_s "git" [ "commit"; "-a"; "--allow-empty"; "-m"; msg ];
-          ] |> Job.run
+          command ~dir:repo_s "git" [ "add"; "*"; ];
+          command ~dir:repo_s "git" [ "commit"; "-a"; "--allow-empty"; "-m"; msg ];
+        ]
+        |> Job.run
         |> OpamStd.Option.iter (fun (cmd, res) -> must_succeed cmd res)
       in
       { st with head = Some data }
@@ -91,6 +92,58 @@ module Serialized = struct
     Json.to_channel ~minify:false cout (to_json s.data);
     close_out cout;
     s
+end
+
+module SerializedLog = struct
+  type 'a t = {
+    old_data : 'a list;
+    new_data : 'a list;
+    path : filename;
+  }
+
+  let items t =
+    List.rev_append t.new_data t.old_data
+
+  let add_item item t =
+    { t with new_data = item :: t.new_data }
+
+  let add_items items t =
+    { t with new_data = List.rev_append items t.new_data }
+
+  let load_json ~file (of_json: Json.t -> 'a): 'a t =
+    let data =
+      let entries = Yojson.Basic.stream_from_file (OpamFilename.to_string file) in
+      let r = ref [] in
+      let of_yojson x =
+        match value_of_yojson x with
+          | #Json.t as x -> of_json x
+          | not_toplevel ->
+             fatal "Invalid toplevel JSON value in %S:\n%s"
+               (OpamFilename.to_string file)
+               (Json.value_to_string not_toplevel)
+      in
+      Stream.iter (fun x -> r := of_yojson x :: !r) entries;
+      List.rev !r
+    in
+    {
+      old_data = data;
+      new_data = [];
+      path = file;
+    }
+
+  let sync_json (type a) (t : a t) (to_json: a -> Json.t): a t =
+    CCIO.with_out_a (OpamFilename.to_string t.path) (fun chan ->
+      let ppf = Format.formatter_of_out_channel chan in
+      List.iter (fun item ->
+          Format.fprintf ppf "%a@."
+            Yojson.Basic.pp
+            (yojson_of_value (to_json item :> Json.value)))
+        (List.rev t.new_data));
+    {
+      old_data = items t;
+      new_data = [];
+      path = t.path;
+    }
 end
 
 type timestamp = string (* git hash *)
@@ -174,7 +227,7 @@ module Cover = struct
 end
 
 module Cover_state = struct
-  type report = (OpamPackage.t * package_report) list
+  type report_item = OpamPackage.t * package_report
   type build_status =
     | Build_remaining of OpamPackage.Set.t
     | Build_finished_with_uninst of OpamPackage.Set.t
@@ -190,19 +243,21 @@ module Cover_state = struct
     timestamp : timestamp Serialized.t;
     cover : Cover.t Serialized.t;
     cur_elt : Lib.cover_elt option Serialized.t;
-    report : report Serialized.t;
+    report : report_item SerializedLog.t;
     build_status : build_status Serialized.t;
   }
 
   let already_built st =
-    List.map fst st.report.data |> OpamPackage.Set.of_list
+    SerializedLog.items st.report
+    |> List.map fst
+    |> OpamPackage.Set.of_list
 
   let create ~dir ~timestamp ~packages =
     let open OpamFilename in
     { timestamp = { data = timestamp; path = Op.(dir // timestamp_path) };
       cover = { data = []; path = Op.(dir // cover_path) };
       cur_elt = { data = None; path = Op.(dir // cur_elt_path) };
-      report = { data = []; path = Op.(dir // report_path) };
+      report = { old_data = []; new_data = []; path = Op.(dir // report_path) };
       build_status = { data = Build_remaining packages;
                       path = Op.(dir // build_status_path) };
     }
@@ -220,9 +275,11 @@ module Cover_state = struct
       build_status = { st.build_status with
                        data = Build_remaining remaining } }
 
-  let add_to_report report (st: t): t =
-    { st with report = { st.report
-                         with data = CCList.append report st.report.data } }
+  let add_item_to_report item (st: t): t =
+    { st with report = SerializedLog.add_item item st.report }
+
+  let add_items_to_report items (st: t): t =
+    { st with report = SerializedLog.add_items items st.report }
 
   (* This assumes that the files already exist on the filesystem in a valid
      state *)
@@ -234,17 +291,13 @@ module Cover_state = struct
     let get_opt =
       function Some x -> x | None -> Json.parse_error `Null "" (* XX *) in
     let pkg_report_of_json j =
+      let j = Json.value j in
       let l = Json.get_dict j in
       let pkg = assoc "package" l in
       let pkg_report = assoc "report" l in
       (get_opt (OpamPackage.of_json pkg),
        package_report_of_json pkg_report)
     in
-    let report_of_json j =
-      try Json.get_list pkg_report_of_json (Json.value j) with
-        Json.Parse_error (_,_) ->
-        fatal "In %s: invalid format"
-          OpamFilename.(prettify Op.(dir // report_path)) in
     let cur_elt_of_json j =
       match j with
       | `A [] -> None
@@ -270,17 +323,15 @@ module Cover_state = struct
       cur_elt = Serialized.load_json ~file:Op.(dir // cur_elt_path)
           cur_elt_of_json;
       report =
-        Serialized.load_json ~file:Op.(dir // report_path) report_of_json;
+        SerializedLog.load_json ~file:Op.(dir // report_path) pkg_report_of_json;
       build_status =
         Serialized.load_json ~file:Op.(dir // build_status_path)
           build_status_of_json; }
 
   let sync state : t =
-    let report_to_json r =
-      Json.list (fun (pkg, pkg_report) ->
-          `O [ ("package", OpamPackage.to_json pkg);
-               ("report", package_report_to_json pkg_report) ]
-      ) r
+    let report_item_to_json (pkg, pkg_report) =
+      `O [ ("package", OpamPackage.to_json pkg);
+           ("report", package_report_to_json pkg_report) ]
     in
     let cur_elt_to_json = function
       | None -> `A []
@@ -294,7 +345,7 @@ module Cover_state = struct
     let timestamp = Serialized.sync_raw state.timestamp in
     let cover = Serialized.sync_json state.cover Cover.to_json in
     let cur_elt = Serialized.sync_json state.cur_elt cur_elt_to_json in
-    let report = Serialized.sync_json state.report report_to_json in
+    let report = SerializedLog.sync_json state.report report_item_to_json in
     let build_status = Serialized.sync_json state.build_status build_status_to_json in
     { timestamp; cover; cur_elt; report; build_status }
 end
