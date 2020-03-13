@@ -171,3 +171,7 @@
   les dépendances des paquets qui ont changé.
 
 - Yojson.Basic.seq_from_string (stream => seq)
+
+- Serialized devrait avoir le type de sérialization (json ou string)
+  comme un existentiel, on lui passe les fonctions de conversion à la création
+  des Serialized.t
