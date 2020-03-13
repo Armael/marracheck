@@ -1,1 +1,1 @@
-(dirs :standard \ workdir* experiments)
+(dirs :standard \ workdir* experiments tmp)
