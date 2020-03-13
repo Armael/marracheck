@@ -249,7 +249,11 @@ module Cover_state = struct
 
   let already_built st =
     SerializedLog.items st.report
-    |> List.map fst
+    |> List.filter_map (fun (pkg, report) ->
+         match report with
+           | Success _ | Error _ -> Some pkg
+           | Aborted _ -> None
+       )
     |> OpamPackage.Set.of_list
 
   let create ~dir ~timestamp ~packages =
