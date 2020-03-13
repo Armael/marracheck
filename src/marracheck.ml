@@ -506,7 +506,11 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
     OpamGlobalState.with_ `Lock_write @@ fun gt ->
     OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
     let (gt, sw) =
-      if OpamGlobalState.switch_exists gt switch_name then begin
+      if not (OpamGlobalState.switch_exists gt switch_name) then begin
+        log "Creating new opam switch %s" compiler_variant;
+        let (gt, sw) = create_new_switch gt ~switch_name ~compiler in
+        (gt, OpamSwitchState.unlock sw)
+      end else begin
         log "Existing opam switch %s found" compiler_variant;
         (* Check that the switch repositories are what we expect
            (just our repository)
@@ -542,10 +546,6 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
               `Lock_write gt ~rt switch_name in
           (OpamGlobalState.unlock gt, sw)
         end
-      end else begin
-        log "Creating new opam switch %s" compiler_variant;
-        let (gt, sw) = create_new_switch gt ~switch_name ~compiler in
-        (gt, OpamSwitchState.unlock sw)
       end
     in
     OpamGlobalState.drop gt;
