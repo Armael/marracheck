@@ -50,19 +50,22 @@ module Versioned = struct
     | Some _ ->
       { head = Some (load ~dir:repo); git_repo = repo }
 
-  let commit_new_head (st: 'a t) ~(sync : 'a -> unit) msg : unit =
+  let commit_new_head ~(sync : 'a -> 'a) msg (st: 'a t) : 'a t =
     let open OpamProcess in
     let repo_s = OpamFilename.Dir.to_string st.git_repo in
     match st.head with
     | None -> assert false
     | Some data ->
-      sync data;
-      let msg = if msg = "" then "-" else msg in
-      Job.of_list [
-        command ~dir:repo_s "git" [ "add"; "*"; ];
-        command ~dir:repo_s "git" [ "commit"; "-a"; "--allow-empty"; "-m"; msg ];
-      ] |> Job.run
-      |> OpamStd.Option.iter (fun (cmd, res) -> must_succeed cmd res)
+      let data = sync data in
+      let () =
+        let msg = if msg = "" then "-" else msg in
+        Job.of_list [
+            command ~dir:repo_s "git" [ "add"; "*"; ];
+            command ~dir:repo_s "git" [ "commit"; "-a"; "--allow-empty"; "-m"; msg ];
+          ] |> Job.run
+        |> OpamStd.Option.iter (fun (cmd, res) -> must_succeed cmd res)
+      in
+      { st with head = Some data }
 end
 
 module Serialized = struct
@@ -75,17 +78,19 @@ module Serialized = struct
     { data = OpamSystem.read (OpamFilename.to_string file);
       path = file }
 
-  let sync_raw (s : string t) =
-    OpamSystem.write (OpamFilename.to_string s.path) s.data
+  let sync_raw (s : string t) : string t =
+    OpamSystem.write (OpamFilename.to_string s.path) s.data;
+    s
 
   let load_json ~file (of_json : Json.t -> 'a) : 'a t =
     let j = read_json file in
     { data = of_json j; path = file }
 
-  let sync_json (s : 'a t) (to_json : 'a -> Json.t) =
+  let sync_json (s : 'a t) (to_json : 'a -> Json.t) : 'a t =
     let cout = open_out (OpamFilename.to_string s.path) in
     Json.to_channel ~minify:false cout (to_json s.data);
-    close_out cout
+    close_out cout;
+    s
 end
 
 type timestamp = string (* git hash *)
@@ -270,7 +275,7 @@ module Cover_state = struct
         Serialized.load_json ~file:Op.(dir // build_status_path)
           build_status_of_json; }
 
-  let sync state : unit =
+  let sync state : t =
     let report_to_json r =
       Json.list (fun (pkg, pkg_report) ->
           `O [ ("package", OpamPackage.to_json pkg);
@@ -286,11 +291,12 @@ module Cover_state = struct
       | Build_finished_with_uninst pkgs ->
         `O [ "build_finished_with_uninst", OpamPackage.Set.to_json pkgs ]
     in
-    Serialized.sync_raw state.timestamp;
-    Serialized.sync_json state.cover Cover.to_json;
-    Serialized.sync_json state.cur_elt cur_elt_to_json;
-    Serialized.sync_json state.report report_to_json;
-    Serialized.sync_json state.build_status build_status_to_json
+    let timestamp = Serialized.sync_raw state.timestamp in
+    let cover = Serialized.sync_json state.cover Cover.to_json in
+    let cur_elt = Serialized.sync_json state.cur_elt cur_elt_to_json in
+    let report = Serialized.sync_json state.report report_to_json in
+    let build_status = Serialized.sync_json state.build_status build_status_to_json in
+    { timestamp; cover; cur_elt; report; build_status }
 end
 
 module Switch_state = struct

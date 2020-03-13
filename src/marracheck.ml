@@ -353,8 +353,8 @@ let rec build_loop
             "New element computed"
         in
         let current_timestamp =
-          { current_timestamp with head = Some cover_state } in
-        Versioned.commit_new_head current_timestamp ~sync:Cover_state.sync msg;
+          Versioned.commit_new_head ~sync:Cover_state.sync msg
+            { current_timestamp with head = Some cover_state } in
         build_loop ~switch_name ~compiler ~universe ~universe_cycles
           current_timestamp
     end
@@ -417,9 +417,9 @@ let rec build_loop
       |> Cover_state.archive_cur_elt
     in
     let current_timestamp =
-      { current_timestamp with head = Some cover_state } in
-    Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
-      "Built the current cover element";
+      Versioned.commit_new_head ~sync:Cover_state.sync
+        "Built the current cover element"
+        { current_timestamp with head = Some cover_state } in
     log "Finished building the current cover element";
     build_loop ~switch_name ~compiler ~universe ~universe_cycles
       current_timestamp
@@ -638,15 +638,11 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
                                data = Build_remaining selection_remaining } },
             true
         in
-
-        let current_timestamp =
-          { switch_state.current_timestamp with head = Some cover_state } in
-        if has_changed then
-          (* Avoid polluting the git history with identity commits *)
-          Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
-            "Update cover state";
-        current_timestamp
-
+        (* Avoid polluting the git history with identity commits *)
+        if not has_changed then switch_state.current_timestamp
+        else
+          Versioned.commit_new_head ~sync:Cover_state.sync "Update cover state"
+            { switch_state.current_timestamp with head = Some cover_state }
       | _ ->
         (* Start over with a fresh [current_timestamp] directory and fresh cover
            state. *)
@@ -672,11 +668,8 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
             ~dir:switch_state.current_timestamp.git_repo
             ~timestamp:repo_timestamp
             ~packages:selection_packages in
-        let current_timestamp =
-          { current_timestamp with head = Some cover_state } in
-        Versioned.commit_new_head ~sync:Cover_state.sync current_timestamp
-          "Initial cover state";
-        current_timestamp
+        Versioned.commit_new_head ~sync:Cover_state.sync "Initial cover state"
+          { current_timestamp with head = Some cover_state }
     in
     current_timestamp
   in
