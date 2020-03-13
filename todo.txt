@@ -138,6 +138,12 @@
   d'attraper ^C et de l'écrire à ce moment là en récupérant les informations sur
   le build partiel ?
 
+  Pour pouvoir ajouter à report.json, il faudrait que le format
+  permettre l'ajout en fin de fichier de façon correcte: au lieu de
+  sérializer une liste JSON à chaque fois, on devrait mettre
+  leséléments séparément les uns à la suite des autres -- si les
+  bibliothèques JSON gèrent ça.
+
 - optim: il me semble qu'actuellement, même si un paquet est présent dans le
   cache de build, alors on va quand même télécharger l'archive des sources et la
   décompresser (et la copier dans le répertoire de build ?), alors que ce n'est
@@ -159,3 +165,9 @@
 - au début créer le switch vide au lieu de le demander avec un
   compilateur, pour pouvoir commencer à télécharger avant d'avoir
   buildé le compilo (plus de parallélisme)
+
+- faire un diff de l'opam-repository au changement de timestamp;
+  au lieu de trasher tout le cache, on pourrait invalider seulement
+  les dépendances des paquets qui ont changé.
+
+- Yojson.Basic.seq_from_string (stream => seq)
