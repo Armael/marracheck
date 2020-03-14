@@ -259,16 +259,13 @@ module Cover_state = struct
     uninst: OpamPackage.Set.t Serialized.t;
   }
 
-  let elt_packages elt =
-    OpamSolver.new_packages elt.Lib.solution
-
   let current_nonbuilt_packages st =
     match st.cur_elt.data with
     | None -> PkgSet.empty
     | Some elt ->
        List.fold_left
          (fun set (package, _) -> PkgSet.remove package set)
-         (elt_packages elt)
+         (Lib.elt_installs elt)
          (SerializedLog.items st.cur_report)
 
   let broken_packages st =
@@ -295,13 +292,13 @@ module Cover_state = struct
       | Aborted _ -> None
 
   let past_resolved_packages st =
-    let elt_resolved (_sol, report) =
+    let resolved report =
       PkgMap.to_seq report
       |> Seq.filter_map select_resolved
       |> PkgSet.of_seq
     in
     List.fold_left
-      (fun set elt -> PkgSet.union set (elt_resolved elt))
+      (fun set (_elt, report) -> PkgSet.union set (resolved report))
       st.uninst.data
       st.past_elts.data
 

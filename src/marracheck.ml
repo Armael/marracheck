@@ -365,12 +365,12 @@ let rec build_loop
        the current element? *)
     OpamGlobalState.with_ `Lock_none @@ fun gt ->
     OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
-    let elt_solution_installs = OpamSolver.new_packages elt.Lib.solution in
+    let elt_installs = Lib.elt_installs elt in
     let reinstall_switch =
       not (PkgSet.subset
              sw.installed
              (PkgSet.union
-                elt_solution_installs universe.u_installed))
+                elt_installs universe.u_installed))
     in
     if reinstall_switch then begin
       log "Re-creating a fresh opam switch.";

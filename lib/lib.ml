@@ -65,6 +65,9 @@ type cover_elt = {
   useful: OpamPackage.Set.t;
 }
 
+let elt_installs elt =
+  OpamSolver.new_packages elt.solution
+
 let pp_cover_elt_stats fmt { solution; useful } =
   Format.fprintf fmt "{inst:%d, useful:%d}"
     (card (OpamSolver.new_packages solution))
