@@ -114,12 +114,10 @@ let prepare_universe (u: universe): universe =
 
 (* Used to discard packages from the universe that we know are broken
    (e.g. do not build). *)
-let filter_universe (p: OpamPackage.t -> bool) (u: universe): universe =
+let remove_from_universe (u: universe) (to_remove : PkgSet.t): universe =
   (* Hopefully it is enough to filter [u_available]?... *)
   { u with
-    u_available = PkgSet.filter p u.u_available;
-    (* u_packages = PkgSet.filter p u.u_packages;
-     * u_installed = PkgSet.filter p u.u_installed; *)
+    u_available = PkgSet.diff u.u_available to_remove;
   }
 
 let compute_universe_cycles (u: universe): PkgSet.t list list =
@@ -300,63 +298,53 @@ let retire_current_timestamp
      same (in particular, the current timestamp stays the same)
    - the opam switch can contain some already installed packages
    - we maintain and update a valid cover_state which contains the current
-     element, the old elements, the report of built packages, and the
-     remaining packages to build
-   - the universe is "clean": it corresponds to an empty switch with only
-     the base packages installed.
-     At the beginning of each loop iteration, we make sure to exclude from
-     the universe packages that did not build according to the report.
+     element, the old elements, the report of built packages
+   - the universe is "clean", no extra installed packages: it corresponds to
+     an empty switch with only the base packages installed.
+   - the installable packages of the universe do not contain packages
+     whose build errored.
 *)
 let rec build_loop
     ~(switch_name : switch)
     ~(compiler : package)
     ~(universe : universe)
     ~(universe_cycles : PkgSet.t list list)
+    ~(to_install: PkgSet.t)
     (current_timestamp : Cover_state.t Versioned.t)
   =
   let cover_state = CCOpt.get_exn current_timestamp.head in
-  let broken_pkgs = Cover_state.broken_packages cover_state in
-  (* TODO: maybe we don't need to filter out *past* broken packages
-     (currently included in the broken_packages result), we can
-     maintain the invariant that the universe never contains past
-     broken packages *)
-  let universe =
-    filter_universe (fun p -> not (PkgSet.mem p broken_pkgs))
-      universe
-  in
   match cover_state.cur_elt.data with
   | None ->
-    if PkgSet.is_empty cover_state.future.data then begin
+    if PkgSet.is_empty to_install then begin
       log "Finished building all packages of the selection \
            (%d uninstallable packages)"
         (PkgSet.cardinal cover_state.uninst.data);
       current_timestamp
     end else begin
-      let to_install = cover_state.future.data in
-      log "Computing the next element...";
-      let elt, remaining =
-        Lib.compute_cover_elt
-          ~make_request:(Lib.make_request_maxsat ~cycles:universe_cycles)
-          ~universe ~to_install in
-      let cover_state, msg =
+      let cover_state, to_install, msg =
+        log "Computing the next element...";
+        let elt, remaining =
+          Lib.compute_cover_elt
+            ~make_request:(Lib.make_request_maxsat ~cycles:universe_cycles)
+            ~universe ~to_install in
         if PkgSet.is_empty elt.useful then begin
           assert (PkgSet.equal to_install remaining);
           { cover_state with
-            future = { cover_state.future with data = PkgSet.empty };
             uninst = { cover_state.uninst with data = remaining };
           },
+          PkgSet.empty,
           "No new element; build loop done"
         end else
           { cover_state with
             cur_elt = { cover_state.cur_elt with data = Some elt };
-            future = { cover_state.future with data = remaining };
           },
+          to_install,
           "New element computed"
       in
       let current_timestamp =
         Versioned.commit_new_head ~sync:Cover_state.sync msg
           { current_timestamp with head = Some cover_state } in
-      build_loop ~switch_name ~compiler ~universe ~universe_cycles
+      build_loop ~switch_name ~compiler ~universe ~universe_cycles ~to_install
         current_timestamp
     end
 
@@ -409,7 +397,13 @@ let rec build_loop
         "Built the current cover element"
         { current_timestamp with head = Some cover_state } in
     log "Finished building the current cover element";
-    build_loop ~switch_name ~compiler ~universe ~universe_cycles
+    let successes = PkgSet.of_list (List.map fst pkgs_success) in
+    let errors = PkgSet.of_list (List.map fst pkgs_error) in
+
+    let universe = remove_from_universe universe errors in
+    let to_install = PkgSet.Op.(to_install -- successes -- errors) in
+
+    build_loop ~switch_name ~compiler ~universe ~universe_cycles ~to_install
       current_timestamp
 
 let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
@@ -565,11 +559,12 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   let universe_cycles = compute_universe_cycles universe in
   log "Done";
 
+  let selection_packages = compute_selection_packages universe in
+  log "User package selection includes %d packages"
+    (PkgSet.cardinal selection_packages);
+
   let current_timestamp =
     let repo_timestamp = get_repo_timestamp repo_url in
-    let selection_packages = compute_selection_packages universe in
-    log "User package selection includes %d packages"
-      (PkgSet.cardinal selection_packages);
     let current_timestamp : Cover_state.t Versioned.t =
       match switch_state.current_timestamp.head with
       | Some cover_state when repo_timestamp = cover_state.timestamp.data ->
@@ -586,13 +581,6 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
           (PkgSet.cardinal selection_remaining);
 
         let has_changed = false in
-
-        (* Update the cover state with the selection packages *)
-        let cover_state, has_changed =
-          match Cover_state.update_package_selection selection_packages cover_state with
-          | None -> cover_state, has_changed
-          | Some cover_state' -> cover_state', true
-        in
 
         (* Archive the current cover element if necessary *)
         let cover_state, has_changed =
@@ -647,18 +635,24 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
            packages selection). *)
         let cover_state = Cover_state.create
             ~dir:switch_state.current_timestamp.git_repo
-            ~timestamp:repo_timestamp
-            ~packages:selection_packages in
+            ~timestamp:repo_timestamp in
         Versioned.commit_new_head ~sync:Cover_state.sync "Initial cover state"
           { current_timestamp with head = Some cover_state }
     in
     current_timestamp
   in
-
   (* An adequate cover_state has been fetched or created. *)
 
+  let universe, to_install =
+    match current_timestamp.head with
+      | None -> universe, selection_packages
+      | Some cover_state ->
+         remove_from_universe universe (Cover_state.broken_packages cover_state),
+         PkgSet.diff selection_packages (Cover_state.resolved_packages cover_state)
+  in
+
   let _current_timestamp : Cover_state.t Versioned.t =
-    build_loop ~switch_name ~compiler ~universe ~universe_cycles
+    build_loop ~switch_name ~compiler ~universe ~universe_cycles ~to_install
       current_timestamp
   in
   log "Done";
