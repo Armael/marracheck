@@ -105,8 +105,8 @@ let prepare_universe (u: universe): universe =
      fresh switch *)
   let u = { u with u_installed = u.u_base;
                    u_installed_roots =
-                     OpamPackage.Set.inter u.u_base u.u_installed_roots;
-                   u_pinned = OpamPackage.Set.empty;
+                     PkgSet.inter u.u_base u.u_installed_roots;
+                   u_pinned = PkgSet.empty;
           } in
   (* Lib.universe_exclude_cycles u *)
   u
@@ -116,12 +116,12 @@ let prepare_universe (u: universe): universe =
 let filter_universe (p: OpamPackage.t -> bool) (u: universe): universe =
   (* Hopefully it is enough to filter [u_available]?... *)
   { u with
-    u_available = OpamPackage.Set.filter p u.u_available;
-    (* u_packages = OpamPackage.Set.filter p u.u_packages;
-     * u_installed = OpamPackage.Set.filter p u.u_installed; *)
+    u_available = PkgSet.filter p u.u_available;
+    (* u_packages = PkgSet.filter p u.u_packages;
+     * u_installed = PkgSet.filter p u.u_installed; *)
   }
 
-let compute_universe_cycles (u: universe): OpamPackage.Set.t list list =
+let compute_universe_cycles (u: universe): PkgSet.t list list =
   let pkgs, cycles = OpamAdminCheck.cycle_check u in
   List.map (fun cycle ->
     List.map (fun f -> OpamFormula.packages pkgs f) cycle
@@ -129,7 +129,7 @@ let compute_universe_cycles (u: universe): OpamPackage.Set.t list list =
 
 (* Assumes a clean universe *)
 let compute_package_selection (u: universe) (compiler: package)
-  : package_selection -> OpamPackage.Set.t
+  : package_selection -> PkgSet.t
   =
   (* NB: this is somewhat expensive to compute *)
   let allpkgs = OpamSolver.installable u in
@@ -259,7 +259,7 @@ let process_solution_result (result: solution_result) =
   ) in
   let aborted l = CCList.map (function
     | `Build p | `Install p | `Fetch p ->
-      p, Aborted { deps = OpamPackage.Set.empty (* TODO *) }
+      p, Aborted { deps = PkgSet.empty (* TODO *) }
     | `Change _ | `Reinstall _ | `Remove _ -> assert false
   ) l
   |> CCList.sort_uniq ~cmp:(fun (p,_) (q,_) -> OpamPackage.compare p q)
@@ -310,7 +310,7 @@ let rec build_loop
     ~(switch_name : switch)
     ~(compiler : package)
     ~(universe : universe)
-    ~(universe_cycles : OpamPackage.Set.t list list)
+    ~(universe_cycles : PkgSet.t list list)
     (current_timestamp : Cover_state.t Versioned.t)
   =
   let cover_state = CCOpt.get_exn current_timestamp.head in
@@ -318,10 +318,10 @@ let rec build_loop
     SerializedLog.items cover_state.report
     |> CCList.filter_map (fun (pkg, report) ->
          match report with Error _ -> Some pkg | _ -> None)
-    |> OpamPackage.Set.of_list
+    |> PkgSet.of_list
   in
   let universe =
-    filter_universe (fun p -> not (OpamPackage.Set.mem p broken_pkgs))
+    filter_universe (fun p -> not (PkgSet.mem p broken_pkgs))
       universe
   in
   match cover_state.cur_elt.data with
@@ -330,7 +330,7 @@ let rec build_loop
       | Build_finished_with_uninst uninst ->
         log "Finished building all packages of the selection \
              (%d uninstallable packages)"
-          (OpamPackage.Set.cardinal uninst);
+          (PkgSet.cardinal uninst);
         current_timestamp
       | Build_remaining to_install ->
         log "Computing the next element...";
@@ -339,8 +339,8 @@ let rec build_loop
             ~make_request:(Lib.make_request_maxsat ~cycles:universe_cycles)
             ~universe ~to_install in
         let cover_state, msg =
-          if OpamPackage.Set.is_empty elt.useful then begin
-            assert (OpamPackage.Set.equal to_install remaining);
+          if PkgSet.is_empty elt.useful then begin
+            assert (PkgSet.equal to_install remaining);
             { cover_state with
               build_status = { cover_state.build_status with
                                data = Build_finished_with_uninst remaining } },
@@ -372,9 +372,9 @@ let rec build_loop
     OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
     let elt_solution_installs = OpamSolver.new_packages elt.Lib.solution in
     let reinstall_switch =
-      not (OpamPackage.Set.subset
+      not (PkgSet.subset
              sw.installed
-             (OpamPackage.Set.union
+             (PkgSet.union
                 elt_solution_installs universe.u_installed))
     in
     if reinstall_switch then begin
@@ -403,7 +403,7 @@ let rec build_loop
 
     (* Update the cover state *)
     let remaining =
-      OpamPackage.Set.(Op.(
+      PkgSet.(Op.(
         status_remaining
         -- (of_list (List.map fst pkgs_success))
         -- (of_list (List.map fst pkgs_error))
@@ -533,9 +533,9 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
         let sw_base_installed =
           OpamSwitchState.with_ `Lock_none gt ~switch:switch_name
             (fun sw ->
-               OpamPackage.Set.inter
+               PkgSet.inter
                  sw.compiler_packages sw.installed) in
-        if not (OpamPackage.Set.mem compiler sw_base_installed) then begin
+        if not (PkgSet.mem compiler sw_base_installed) then begin
           log "Either the compiler %s is not installed or not in the \
                base packages of the switch" (OpamPackage.to_string compiler);
           log "Creating a new switch instead";
@@ -581,7 +581,7 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
     let repo_timestamp = get_repo_timestamp repo_url in
     let selection_packages = compute_selection_packages universe in
     log "User packages selection includes %d packages"
-      (OpamPackage.Set.cardinal selection_packages);
+      (PkgSet.cardinal selection_packages);
     let current_timestamp : Cover_state.t Versioned.t =
       match switch_state.current_timestamp.head with
       | Some cover_state when repo_timestamp = cover_state.timestamp.data ->
@@ -599,19 +599,19 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
         log "Found an existing cover state for the current timestamp";
         let already_built = Cover_state.already_built cover_state in
         let selection_already_built =
-          OpamPackage.Set.inter already_built selection_packages in
+          PkgSet.inter already_built selection_packages in
         let selection_remaining =
-          OpamPackage.Set.diff selection_packages already_built in
+          PkgSet.diff selection_packages already_built in
 
         log "%d packages from the selection have already been built; \
              remaining: %d"
-          (OpamPackage.Set.cardinal selection_already_built)
-          (OpamPackage.Set.cardinal selection_remaining);
+          (PkgSet.cardinal selection_already_built)
+          (PkgSet.cardinal selection_remaining);
 
         (* Update [cover_state] with the selection packages *)
         let cover_state, has_changed =
           let is_resumable elt =
-            let open OpamPackage.Set in
+            let open PkgSet in
             let remaining = diff elt.Lib.useful already_built in
             not (is_empty remaining) && subset remaining selection_remaining in
           match cover_state.cur_elt.data with
@@ -619,7 +619,7 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
             log "Reusing the current cover element";
             (* Update the remaining build packages according to the selection *)
             let remaining =
-              OpamPackage.Set.diff selection_remaining elt.Lib.useful in
+              PkgSet.diff selection_remaining elt.Lib.useful in
             let cover_state' = Cover_state.set_remaining remaining cover_state in
             let has_changed =
               not (Cover_state.eq_build_status

@@ -1,5 +1,8 @@
 open OpamTypes
 
+module PkgSet = OpamPackage.Set
+module PkgMap = OpamPackage.Map
+
 module Json = Ezjsonm
 
 let rec value_of_yojson = function

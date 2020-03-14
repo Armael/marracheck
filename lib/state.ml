@@ -154,7 +154,7 @@ type error_cause = [ `Fetch | `Build | `Install ]
 type package_report =
   | Success of { log : build_log; changes : changes }
   | Error of { log : build_log; cause : error_cause }
-  | Aborted of { deps : OpamPackage.Set.t }
+  | Aborted of { deps : PkgSet.t }
   (* An [Aborted] status means that the package could not be built
      because _for all possible ways of building the package_
      at least one of its dependencies fails to build. *)
@@ -175,7 +175,7 @@ let package_report_of_json (j: Json.value): package_report =
       in
       Error { log = Json.get_list Json.get_string (List.assoc "log" l); cause }
     | "aborted" ->
-      let deps = match OpamPackage.Set.of_json (List.assoc "deps" l) with
+      let deps = match PkgSet.of_json (List.assoc "deps" l) with
         | Some deps -> deps
         | None -> raise Not_found
       in
@@ -199,7 +199,7 @@ let package_report_to_json = function
          ("cause", `String cause_s) ]
   | Aborted { deps } ->
     `O [ ("status", `String "aborted");
-         ("deps", OpamPackage.Set.to_json deps) ]
+         ("deps", PkgSet.to_json deps) ]
 
 module Cover = struct
   type t = Lib.cover_elt list
@@ -212,12 +212,12 @@ module Cover = struct
               OpamSolver.solution_of_json (List.assoc "solution" l)
               |> get_opt;
             useful =
-              OpamPackage.Set.of_json (List.assoc "useful" l) |> get_opt; }
+              PkgSet.of_json (List.assoc "useful" l) |> get_opt; }
     with Not_found -> Json.parse_error `Null "" (* XX *)
 
   let cover_elt_to_json elt =
     `O [ ("solution", OpamSolver.solution_to_json elt.Lib.solution);
-         ("useful", OpamPackage.Set.to_json elt.Lib.useful) ]
+         ("useful", PkgSet.to_json elt.Lib.useful) ]
 
   let of_json (j: Json.t): t =
     Json.get_list cover_elt_of_json (Json.value j)
@@ -229,14 +229,14 @@ end
 module Cover_state = struct
   type report_item = OpamPackage.t * package_report
   type build_status =
-    | Build_remaining of OpamPackage.Set.t
-    | Build_finished_with_uninst of OpamPackage.Set.t
+    | Build_remaining of PkgSet.t
+    | Build_finished_with_uninst of PkgSet.t
 
   let eq_build_status st1 st2 =
     match st1, st2 with
     | Build_remaining s1, Build_remaining s2
     | Build_finished_with_uninst s1, Build_finished_with_uninst s2 ->
-      OpamPackage.Set.equal s1 s2
+      PkgSet.equal s1 s2
     | _ -> false
 
   type t = {
@@ -254,7 +254,7 @@ module Cover_state = struct
            | Success _ | Error _ -> Some pkg
            | Aborted _ -> None
        )
-    |> OpamPackage.Set.of_list
+    |> PkgSet.of_list
 
   let create ~dir ~timestamp ~packages =
     let open OpamFilename in
@@ -274,7 +274,7 @@ module Cover_state = struct
         cover = { st.cover with data = elt :: st.cover.data };
         cur_elt = { data = None; path = st.cur_elt.path } }
 
-  let set_remaining (remaining: OpamPackage.Set.t) (st: t): t =
+  let set_remaining (remaining: PkgSet.t) (st: t): t =
     { st with
       build_status = { st.build_status with
                        data = Build_remaining remaining } }
@@ -316,9 +316,9 @@ module Cover_state = struct
       try
         begin match j with
           | `O [ "build_remaining", pkgs ] ->
-            Build_remaining (get_opt (OpamPackage.Set.of_json pkgs))
+            Build_remaining (get_opt (PkgSet.of_json pkgs))
           | `O [ "build_finished_with_uninst", pkgs ] ->
-            Build_finished_with_uninst (get_opt (OpamPackage.Set.of_json pkgs))
+            Build_finished_with_uninst (get_opt (PkgSet.of_json pkgs))
           | _ -> err ()
         end with Json.Parse_error (_,_) -> err ()
     in
@@ -342,9 +342,9 @@ module Cover_state = struct
       | Some elt -> `A [ Cover.cover_elt_to_json elt ] in
     let build_status_to_json = function
       | Build_remaining pkgs ->
-        `O [ "build_remaining", OpamPackage.Set.to_json pkgs ]
+        `O [ "build_remaining", PkgSet.to_json pkgs ]
       | Build_finished_with_uninst pkgs ->
-        `O [ "build_finished_with_uninst", OpamPackage.Set.to_json pkgs ]
+        `O [ "build_finished_with_uninst", PkgSet.to_json pkgs ]
     in
     let timestamp = Serialized.sync_raw state.timestamp in
     let cover = Serialized.sync_json state.cover Cover.to_json in
@@ -395,7 +395,7 @@ module Work_state = struct
   end
 
   module View_all = struct
-    type t = Switch_state.t OpamPackage.Map.t
+    type t = Switch_state.t PkgMap.t
     let load ~workdir : t =
       (* load all things that resemble valid switch states;
          errors for any directory that exists in switches/
