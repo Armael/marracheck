@@ -5,6 +5,8 @@ type cover_elt = {
   useful: OpamPackage.Set.t;
 }
 
+val elt_installs: cover_elt -> OpamPackage.Set.t
+
 val pp_cover_elt_stats : Format.formatter -> cover_elt -> unit
 
 val compute_cover_elt :
