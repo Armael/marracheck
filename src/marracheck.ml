@@ -288,35 +288,57 @@ let retire_current_timestamp
       current_timestamp.git_repo
       File.Op.(past_timestamps / (cur_basename ^ "_" ^ timestamp_s))
 
-(* Build loop:
-   - compute the next element of the cover (if needed);
-   - build all packages of this element;
-   - archive it, and update the set of remaining packages;
-
-   Loop invariant:
-   - everything other than the opam switch and the cover state stays the
-     same (in particular, the current timestamp stays the same)
-   - the opam switch can contain some already installed packages
-   - we maintain and update a valid cover_state which contains the current
-     element, the old elements, the report of built packages
-   - the universe is "clean", no extra installed packages: it corresponds to
-     an empty switch with only the base packages installed.
-   - the installable packages of the universe do not contain packages
-     whose build errored.
-*)
-let rec build_loop
+let build
     ~(switch_name : switch)
     ~(compiler : package)
     ~(universe : universe)
     ~(universe_cycles : PkgSet.t list list)
     ~(to_install: PkgSet.t)
-    (current_timestamp : Cover_state.t Versioned.t)
+    (initial_timestamp : Cover_state.t Versioned.t)
   =
-  let cover_state = CCOpt.get_exn current_timestamp.head in
-  match cover_state.cur_elt.data with
-  | None ->
+  (* Build loop:
+     - compute the next element of the cover (if needed);
+     - build all packages of this element;
+     - archive it, and update the set of remaining packages;
+
+     Loop invariant:
+     - everything other than the opam switch and the cover state stays the
+       same (in particular, the current timestamp stays the same)
+     - the opam switch can contain some already installed packages
+     - we maintain and update a valid cover_state which contains the current
+       element, the old elements, the report of built packages
+     - the universe is "clean", no extra installed packages: it corresponds to
+       an empty switch with only the base packages installed.
+     - the installable packages of the universe do not contain packages
+       whose build errored.
+  *)
+  let rec start_build
+      ~(universe : universe)
+      ~(to_install: PkgSet.t)
+      (current_timestamp : Cover_state.t Versioned.t)
+    =
+    let cover_state = CCOpt.get_exn current_timestamp.head in
+    match cover_state.cur_elt.data with
+    | None ->
+       build_next_cover_element ~universe ~to_install current_timestamp cover_state
+    | Some cover_elt ->
+       build_cover_element ~universe ~to_install current_timestamp cover_state cover_elt
+
+  and finish_build (current_timestamp : Cover_state.t Versioned.t) =
+    let cover_state = CCOpt.get_exn current_timestamp.head in
+    log "Finished building all packages of the selection \
+         (%d uninstallable packages)"
+      (PkgSet.cardinal cover_state.uninst.data);
+    current_timestamp
+
+  and build_next_cover_element
+    ~(universe : universe)
+    ~(to_install: PkgSet.t)
+    (current_timestamp : Cover_state.t Versioned.t)
+    (cover_state : Cover_state.t)
+  =
     if PkgSet.is_empty to_install then
-      end_build_loop current_timestamp
+      finish_build current_timestamp
     else begin
       log "Computing the next element...";
       let elt, remaining =
@@ -332,38 +354,47 @@ let rec build_loop
           uninst = { cover_state.uninst with data = remaining };
         }
         |> change_cover_state "No new element; build loop done"
-        |> end_build_loop
+        |> finish_build
       end else begin
-        { cover_state with
-          cur_elt = { cover_state.cur_elt with data = Some elt };
-        }
-        |> change_cover_state "New element computed"
-        |> build_loop ~switch_name ~compiler ~universe ~universe_cycles ~to_install
+        let cover_state =
+          { cover_state with
+            cur_elt = { cover_state.cur_elt with data = Some elt };
+          } in
+        let current_timestamp =
+          change_cover_state "New element computed" cover_state in
+        build_cover_element ~universe ~to_install current_timestamp cover_state elt
       end
     end
 
-  | Some elt ->
+  and build_cover_element
+    ~(universe : universe)
+    ~(to_install: PkgSet.t)
+    (current_timestamp : Cover_state.t Versioned.t)
+    (cover_state : Cover_state.t)
+    (elt : Lib.cover_elt)
+    =
     (* Are the packages currently installed in the opam switch compatible with
        the current element? *)
-    OpamGlobalState.with_ `Lock_none @@ fun gt ->
-    OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
-    let elt_installs = Lib.elt_installs elt in
-    let reinstall_switch =
-      not (PkgSet.subset
-             sw.installed
-             (PkgSet.union
-                elt_installs universe.u_installed))
-    in
-    if reinstall_switch then begin
-      log "Re-creating a fresh opam switch.";
-      let sw, gt =
-        OpamGlobalState.with_write_lock gt @@ fun gt ->
-        recreate_switch gt ~switch_name ~compiler in
-      OpamSwitchState.drop sw; OpamGlobalState.drop gt
+    begin
+      OpamGlobalState.with_ `Lock_none @@ fun gt ->
+      OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
+      let elt_installs = Lib.elt_installs elt in
+      let reinstall_switch =
+        not (PkgSet.subset
+               sw.installed
+               (PkgSet.union
+                  elt_installs universe.u_installed))
+      in
+      if reinstall_switch then begin
+        log "Re-creating a fresh opam switch.";
+        let sw, gt =
+          OpamGlobalState.with_write_lock gt @@ fun gt ->
+          recreate_switch gt ~switch_name ~compiler in
+        OpamSwitchState.drop sw; OpamGlobalState.drop gt
+      end;
     end;
 
     (* The cover element can now be built in the current opam switch *)
-
     let pkgs_success, pkgs_error, pkgs_aborted =
       OpamGlobalState.with_ `Lock_none @@ fun gs ->
       OpamSwitchState.with_ `Lock_write gs @@ fun sw ->
@@ -391,21 +422,17 @@ let rec build_loop
         "Built the current cover element"
         { current_timestamp with head = Some cover_state } in
     log "Finished building the current cover element";
-    let successes = PkgSet.of_list (List.map fst pkgs_success) in
-    let errors = PkgSet.of_list (List.map fst pkgs_error) in
 
-    let universe = remove_from_universe universe errors in
-    let to_install = PkgSet.Op.(to_install -- successes -- errors) in
+    let universe, to_install =
+      let successes = PkgSet.of_list (List.map fst pkgs_success) in
+      let errors = PkgSet.of_list (List.map fst pkgs_error) in
+      remove_from_universe universe errors,
+      PkgSet.Op.(to_install -- successes -- errors)
+    in
+    build_next_cover_element ~universe ~to_install current_timestamp cover_state
 
-    build_loop ~switch_name ~compiler ~universe ~universe_cycles ~to_install
-      current_timestamp
-
-and end_build_loop current_timestamp =
-  let cover_state = CCOpt.get_exn current_timestamp.head in
-  log "Finished building all packages of the selection \
-       (%d uninstallable packages)"
-    (PkgSet.cardinal cover_state.uninst.data);
-  current_timestamp
+  in
+  start_build ~universe ~to_install initial_timestamp
 
 let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   let workdir = get_or_fatal (validate_workdir working_dir)
@@ -653,7 +680,7 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   in
 
   let _current_timestamp : Cover_state.t Versioned.t =
-    build_loop ~switch_name ~compiler ~universe ~universe_cycles ~to_install
+    build ~switch_name ~compiler ~universe ~universe_cycles ~to_install
       current_timestamp
   in
   log "Done";
