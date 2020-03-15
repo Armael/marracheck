@@ -288,6 +288,65 @@ let retire_current_timestamp
       current_timestamp.git_repo
       File.Op.(past_timestamps / (cur_basename ^ "_" ^ timestamp_s))
 
+let recover_opam_root ~workdir ~repo_url opamroot =
+  match OpamFile.exists (OpamPath.config opamroot) with
+  | false ->
+    (* No: do "opam init" *)
+    log "Initializing a fresh opam root in %s..."
+      (OpamFilename.prettify_dir opamroot);
+    init_opam_root ~workdir ~opamroot ~repo_url;
+    (* FIXME: if ^C during init_opam_root -> present but corrupted opam root *)
+    log "Done initializing a fresh opam root"
+  | true ->
+    (* Yes: do "opam update" *)
+    log "Found an existing opam root in %s"
+      (OpamFilename.prettify_dir opamroot);
+    (* If the commandline [repo] argument is not the same as the
+       current opamroot repo, change the global repo url. *)
+    begin
+      OpamGlobalState.with_ `Lock_none @@ fun gt ->
+      OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+      let opamroot_repo =
+        OpamRepositoryState.get_repo rt OpamRepositoryName.default in
+      if opamroot_repo.repo_url <> repo_url then begin
+        log "Existing repo url is different from the one \
+             provided by the user: updating it";
+        OpamRepositoryState.with_write_lock rt @@ fun rt ->
+        let rt =
+          OpamRepositoryCommand.set_url rt
+            OpamRepositoryName.default repo_url None in
+        OpamRepositoryState.write_config rt;
+        (), rt
+      end |> fun ((), rt) -> OpamRepositoryState.drop rt
+    end;
+    log "Updating the repository...";
+    OpamGlobalState.with_ `Lock_write @@ begin fun gt ->
+      let success, _changed, _rt =
+        OpamClient.update gt ~repos_only:true ~dev_only:false [] in
+      if not success then OpamStd.Sys.exit_because `Sync_error;
+    end;
+    log "Done updating the repository."
+
+(* Are the packages currently installed in the opam switch compatible with
+   the current cover element? *)
+let recover_opam_switch ~switch_name ~universe  ~compiler cover_elt =
+    OpamGlobalState.with_ `Lock_none @@ fun gt ->
+    OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
+    let elt_installs = Lib.elt_installs cover_elt in
+    let reinstall_switch =
+      not (PkgSet.subset
+             sw.installed
+             (PkgSet.union
+                elt_installs universe.u_installed))
+    in
+    if reinstall_switch then begin
+      log "Re-creating a fresh opam switch.";
+      let sw, gt =
+        OpamGlobalState.with_write_lock gt @@ fun gt ->
+        recreate_switch gt ~switch_name ~compiler in
+      OpamSwitchState.drop sw; OpamGlobalState.drop gt
+    end
+
 let build
     ~(switch_name : switch)
     ~(compiler : package)
@@ -373,26 +432,9 @@ let build
     (cover_state : Cover_state.t)
     (elt : Lib.cover_elt)
     =
-    (* Are the packages currently installed in the opam switch compatible with
-       the current element? *)
-    begin
-      OpamGlobalState.with_ `Lock_none @@ fun gt ->
-      OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
-      let elt_installs = Lib.elt_installs elt in
-      let reinstall_switch =
-        not (PkgSet.subset
-               sw.installed
-               (PkgSet.union
-                  elt_installs universe.u_installed))
-      in
-      if reinstall_switch then begin
-        log "Re-creating a fresh opam switch.";
-        let sw, gt =
-          OpamGlobalState.with_write_lock gt @@ fun gt ->
-          recreate_switch gt ~switch_name ~compiler in
-        OpamSwitchState.drop sw; OpamGlobalState.drop gt
-      end;
-    end;
+    (* Note: we recover after a program restart,
+       but also when starting a new cover element. *)
+    recover_opam_switch ~switch_name ~universe ~compiler elt;
 
     (* The cover element can now be built in the current opam switch *)
     let pkgs_success, pkgs_error, pkgs_aborted =
@@ -469,45 +511,7 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
     ();
 
   (* Is there anything in the opamroot? *)
-
-  begin match OpamFile.exists (OpamPath.config opamroot) with
-    | false ->
-      (* No: do "opam init" *)
-      log "Initializing a fresh opam root in %s..."
-        (OpamFilename.prettify_dir opamroot);
-      init_opam_root ~workdir ~opamroot ~repo_url;
-      (* FIXME: if ^C during init_opam_root -> present but corrupted opam root *)
-      log "Done initializing a fresh opam root"
-    | true ->
-      (* Yes: do "opam update" *)
-      log "Found an existing opam root in %s"
-        (OpamFilename.prettify_dir opamroot);
-      (* If the commandline [repo] argument is not the same as the
-         current opamroot repo, change the global repo url. *)
-      begin
-        OpamGlobalState.with_ `Lock_none @@ fun gt ->
-        OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-        let opamroot_repo =
-          OpamRepositoryState.get_repo rt OpamRepositoryName.default in
-        if opamroot_repo.repo_url <> repo_url then begin
-          log "Existing repo url is different from the one \
-               provided by the user: updating it";
-          OpamRepositoryState.with_write_lock rt @@ fun rt ->
-          let rt =
-            OpamRepositoryCommand.set_url rt
-              OpamRepositoryName.default repo_url None in
-          OpamRepositoryState.write_config rt;
-          (), rt
-        end |> fun ((), rt) -> OpamRepositoryState.drop rt
-      end;
-      log "Updating the repository...";
-      OpamGlobalState.with_ `Lock_write @@ begin fun gt ->
-        let success, _changed, _rt =
-          OpamClient.update gt ~repos_only:true ~dev_only:false [] in
-        if not success then OpamStd.Sys.exit_because `Sync_error;
-      end;
-      log "Done updating the repository.";
-  end;
+  recover_opam_root ~workdir ~repo_url opamroot;
 
   (* We now have an initialized opamroot with an updated repository *)
 
