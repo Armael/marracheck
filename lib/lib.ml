@@ -60,37 +60,39 @@ let _universe_exclude_cycles (u: OpamTypes.universe): OpamTypes.universe =
 
 (********)
 
-type cover_elt = {
-  solution: OpamSolver.solution;
-  useful: OpamPackage.Set.t;
-}
+module Cover_elt_plan = struct
+  type t = {
+    solution: OpamSolver.solution;
+    useful: OpamPackage.Set.t;
+  }
 
-let elt_installs elt =
-  OpamSolver.new_packages elt.solution
+  let installs elt =
+    OpamSolver.new_packages elt.solution
 
-let pp_cover_elt_stats fmt { solution; useful } =
-  Format.fprintf fmt "{inst:%d, useful:%d}"
-    (card (OpamSolver.new_packages solution))
-    (card useful)
+  let pp_stats fmt { solution; useful } =
+    Format.fprintf fmt "{inst:%d, useful:%d}"
+      (card (OpamSolver.new_packages solution))
+      (card useful)
 
-let compute_cover_elt ~make_request ~universe ~to_install =
-  log "compute_cover_elt: to_install size = %d" (card to_install);
-  let solution = make_request ~universe ~to_install in
-  log "DONE";
-  let solution_installs = OpamSolver.new_packages solution in
-  let useful = OpamPackage.Set.inter to_install solution_installs in
-  let elt = { solution; useful } in
-  log "cover elt: %a" pp_cover_elt_stats elt;
-  (* "Remaining" is the set of packages that we could not install as part of the
-     element. We have to make sure to exclude from this set packages that are
-     *already installed* in the universe, because they would otherwise be
-     eventually counted as uninstallable (they never occur in the "new packages"
-     of a solution since they're already installed...). *)
-  let remaining = OpamPackage.Set.Op.(
-    (to_install -- solution_installs) -- universe.OpamTypes.u_installed
-  ) in
-  log "remaining: %d" (card remaining);
-  elt, remaining
+  let compute ~make_request ~universe ~to_install =
+    log "compute_cover_elt: to_install size = %d" (card to_install);
+    let solution = make_request ~universe ~to_install in
+    log "DONE";
+    let solution_installs = OpamSolver.new_packages solution in
+    let useful = OpamPackage.Set.inter to_install solution_installs in
+    let elt = { solution; useful } in
+    log "cover elt: %a" pp_stats elt;
+    (* "Remaining" is the set of packages that we could not install as part of the
+       element. We have to make sure to exclude from this set packages that are
+       *already installed* in the universe, because they would otherwise be
+       eventually counted as uninstallable (they never occur in the "new packages"
+       of a solution since they're already installed...). *)
+    let remaining = OpamPackage.Set.Op.(
+      (to_install -- solution_installs) -- universe.OpamTypes.u_installed
+    ) in
+    log "remaining: %d" (card remaining);
+    elt, remaining
+end
 
 let dump_file = "last_run.dump"
 
@@ -111,7 +113,7 @@ let constraint_to_cudf version_map name (op, v) =
   try Some (op, OpamPackage.Map.find nv version_map)
   with Not_found ->
     (* Hopefully this doesn't happen according to the comment in opamSolver.ml
-       *)
+    *)
     assert false
 
 let name_to_cudf name =

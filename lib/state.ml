@@ -1,6 +1,8 @@
 open OpamTypes
 open Utils
 
+module Cover_elt_plan = Lib.Cover_elt_plan
+
 (* Relative to the workdir *)
 let cache_path = "cache"
 let switches_path = "switches"
@@ -14,8 +16,8 @@ let past_timestamps_path = "past_timestamps"
 (* Relative to a current_timestamp.git directory *)
 let timestamp_path = "timestamp"
 let past_elts_path = "past_elts.json"
-let cur_elt_path = "cur_elt.json"
-let cur_report_path = "report.json"
+let cur_plan_path = "cur_plan.json"
+let cur_report_path = "cur_report.json"
 let uninst_path = "uninst.json"
 
 module Versioned = struct
@@ -204,10 +206,10 @@ let package_report_to_json = function
 
 module Cover = struct
   type elt_report = package_report OpamPackage.Map.t
-  type elt = Lib.cover_elt * elt_report
+  type elt = Cover_elt_plan.t * elt_report
   type t = elt list
 
-  let cover_elt_of_json (j: Json.value): Lib.cover_elt =
+  let cover_elt_plan_of_json (j: Json.value): Cover_elt_plan.t =
     try
       let l = Json.get_dict j in
       let get_opt = function Some x -> x | None -> raise Not_found in
@@ -218,24 +220,24 @@ module Cover = struct
               PkgSet.of_json (List.assoc "useful" l) |> get_opt; }
     with Not_found -> Json.parse_error j "invalid cover element"
 
-  let cover_elt_to_json elt =
-    `O [ ("solution", OpamSolver.solution_to_json elt.Lib.solution);
-         ("useful", PkgSet.to_json elt.Lib.useful) ]
+  let cover_elt_plan_to_json plan =
+    `O [ ("solution", OpamSolver.solution_to_json plan.Cover_elt_plan.solution);
+         ("useful", PkgSet.to_json plan.Cover_elt_plan.useful) ]
 
-  let cover_report_of_json (j : Json.value): elt_report =
+  let cover_elt_report_of_json (j : Json.value): elt_report =
     let report_of_json j = Some (package_report_of_json j) in
     match OpamPackage.Map.of_json report_of_json j with
     | Some r -> r
     | None -> Json.parse_error j "invalid cover report"
 
-  let cover_report_to_json (report: elt_report) =
+  let cover_elt_report_to_json (report: elt_report) =
     OpamPackage.Map.to_json package_report_to_json report
 
   let elt_of_json (j: Json.value): elt =
-    Json.get_pair cover_elt_of_json cover_report_of_json j
+    Json.get_pair cover_elt_plan_of_json cover_elt_report_of_json j
 
   let elt_to_json (elt: elt): Json.value =
-    Json.pair cover_elt_to_json cover_report_to_json elt
+    Json.pair cover_elt_plan_to_json cover_elt_report_to_json elt
 
   let of_json (j: Json.value): t =
     Json.get_list elt_of_json j
@@ -250,19 +252,16 @@ module Cover_state = struct
   type t = {
     timestamp : timestamp Serialized.t;
     past_elts : Cover.t Serialized.t;
-    cur_elt : Lib.cover_elt option Serialized.t;
+    cur_plan : Cover_elt_plan.t option Serialized.t;
     cur_report : report_item SerializedLog.t;
     uninst: OpamPackage.Set.t Serialized.t;
   }
 
-  let nonbuilt_useful_packages st =
-    match st.cur_elt.data with
-    | None -> PkgSet.empty
-    | Some elt ->
-       List.fold_left
-         (fun set (package, _) -> PkgSet.remove package set)
-         elt.Lib.useful
-         (SerializedLog.items st.cur_report)
+  let nonbuilt_useful_packages plan report =
+    List.fold_left
+      (fun set (package, _) -> PkgSet.remove package set)
+      plan.Cover_elt_plan.useful
+      report
 
   let broken_packages st =
     let select_broken (pkg, report) =
@@ -311,7 +310,7 @@ module Cover_state = struct
     let open OpamFilename in
     { timestamp = { data = timestamp; path = Op.(dir // timestamp_path) };
       past_elts = { data = []; path = Op.(dir // past_elts_path) };
-      cur_elt = { data = None; path = Op.(dir // cur_elt_path) };
+      cur_plan = { data = None; path = Op.(dir // cur_plan_path) };
       cur_report = { old_data = []; new_data = []; path = Op.(dir // cur_report_path) };
       uninst = { data = PkgSet.empty; path = Op.(dir // uninst_path) };
     }
@@ -322,14 +321,15 @@ module Cover_state = struct
       ) PkgMap.empty report
 
   let archive_cur_elt (st: t): t =
-    match st.cur_elt.data with
+    match st.cur_plan.data with
     | None -> st
-    | Some cover_elt ->
+    | Some plan ->
       let report = archive_report (SerializedLog.items st.cur_report) in
-      let elt = (cover_elt, report) in
+      let elt = (plan, report) in
       { st with
         past_elts = { st.past_elts with data = elt :: st.past_elts.data };
-        cur_elt = { data = None; path = st.cur_elt.path };
+        cur_plan = { data = None; path = st.cur_plan.path };
+        cur_report = { old_data = []; new_data = []; path = st.cur_report.path };
       }
 
   let add_item_to_report item (st: t): t =
@@ -355,21 +355,23 @@ module Cover_state = struct
       (get_opt (OpamPackage.of_json pkg),
        package_report_of_json pkg_report)
     in
-    let cur_elt_of_json j =
+    let cur_elt_plan_of_json j =
       match j with
       | `A [] -> None
-      | `A [ j' ] -> Some (Cover.cover_elt_of_json j')
+      | `A [ j' ] -> Some (Cover.cover_elt_plan_of_json j')
       | _ ->
         fatal "In %s: invalid format"
-          OpamFilename.(prettify Op.(dir // cur_elt_path))
+          OpamFilename.(prettify Op.(dir // cur_plan_path))
     in
     let uninst_of_json j =
       get_opt (PkgSet.of_json (Json.get_dict j |> assoc "uninst")) in
     {
       timestamp = Serialized.load_raw ~file:Op.(dir // timestamp_path);
       past_elts = Serialized.load_json ~file:Op.(dir // past_elts_path) Cover.of_json;
-      cur_elt = Serialized.load_json ~file:Op.(dir // cur_elt_path) cur_elt_of_json;
-      cur_report = SerializedLog.load_json ~file:Op.(dir // cur_report_path) report_item_of_json;
+      cur_plan =
+        Serialized.load_json ~file:Op.(dir // cur_plan_path) cur_elt_plan_of_json;
+      cur_report =
+        SerializedLog.load_json ~file:Op.(dir // cur_report_path) report_item_of_json;
       uninst = Serialized.load_json ~file:Op.(dir // uninst_path) uninst_of_json;
     }
 
@@ -378,17 +380,17 @@ module Cover_state = struct
       `O [ ("package", OpamPackage.to_json pkg);
            ("report", package_report_to_json pkg_report) ]
     in
-    let cur_elt_to_json = function
+    let cur_plan_to_json = function
       | None -> `A []
-      | Some elt -> `A [ Cover.cover_elt_to_json elt ] in
+      | Some elt -> `A [ Cover.cover_elt_plan_to_json elt ] in
     let uninst_to_json set = `O [ "uninst", PkgSet.to_json set ] in
 
     let timestamp = Serialized.sync_raw state.timestamp in
     let past_elts = Serialized.sync_json state.past_elts Cover.to_json in
-    let cur_elt = Serialized.sync_json state.cur_elt cur_elt_to_json in
+    let cur_plan = Serialized.sync_json state.cur_plan cur_plan_to_json in
     let cur_report = SerializedLog.sync_json state.cur_report report_item_to_json in
     let uninst = Serialized.sync_json state.uninst uninst_to_json in
-    { timestamp; past_elts; cur_elt; cur_report; uninst }
+    { timestamp; past_elts; cur_plan; cur_report; uninst }
 end
 
 module Switch_state = struct

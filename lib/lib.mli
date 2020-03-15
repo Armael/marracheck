@@ -1,23 +1,25 @@
 (* val universe_exclude_cycles : OpamTypes.universe -> OpamTypes.universe *)
 
-type cover_elt = {
-  solution: OpamSolver.solution;
-  useful: OpamPackage.Set.t;
-}
+module Cover_elt_plan : sig
+  type t = {
+    solution: OpamSolver.solution;
+    useful: OpamPackage.Set.t;
+  }
 
-val elt_installs: cover_elt -> OpamPackage.Set.t
+  val installs: t -> OpamPackage.Set.t
 
-val pp_cover_elt_stats : Format.formatter -> cover_elt -> unit
+  val pp_stats : Format.formatter -> t -> unit
 
-val compute_cover_elt :
-  make_request:(
+  val compute :
+    make_request:(
+      universe:OpamTypes.universe ->
+      to_install:OpamPackage.Set.t ->
+      OpamSolver.solution
+    ) ->
     universe:OpamTypes.universe ->
     to_install:OpamPackage.Set.t ->
-    OpamSolver.solution
-  ) ->
-  universe:OpamTypes.universe ->
-  to_install:OpamPackage.Set.t ->
-  cover_elt * OpamPackage.Set.t
+    t * OpamPackage.Set.t
+end
 
 val dump_file : string
 

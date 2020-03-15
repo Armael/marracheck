@@ -113,8 +113,8 @@ let rec make_request ~universe ~to_install =
 let compute_cover_batch ~universe ~packages =
   let rec loop elts to_install =
     let elt, remaining =
-      Lib.compute_cover_elt ~make_request ~universe ~to_install in
-    if OpamPackage.Set.is_empty elt.useful then begin
+      Lib.Cover_elt_plan.compute ~make_request ~universe ~to_install in
+    if OpamPackage.Set.is_empty elt.Cover_elt_plan.useful then begin
       (* We are done, the remaining packages are uninstallable *)
       assert (OpamPackage.Set.equal to_install remaining);
       List.rev elts, remaining
@@ -148,10 +148,10 @@ let () =
       compute_cover_batch ~universe:u ~packages:all_packages in
     CCIO.with_out Lib.dump_file (fun cout -> output_value cout (elts, uninst));
     log_inline "\n";
-    List.iter (fun (cover_elt: Lib.cover_elt) ->
+    List.iter (fun (elt: Lib.Cover_elt_plan.t) ->
       log_inline "(%d|%d) "
-        (card (OpamSolver.new_packages cover_elt.solution))
-        (card cover_elt.useful)
+        (card (Cover_elt_plan.installs elt))
+        (card elt.Cover_elt_plan.useful)
     ) elts;
     log_inline "\n";
     log "uninstallable: %d" (card uninst)

@@ -6,6 +6,7 @@ open State
 module File = OpamFilename
 module Dir = OpamFilename.Dir
 module PkgSet = OpamPackage.Set
+module Cover_elt_plan = Lib.Cover_elt_plan
 
 type package_selection = [
   | `All (* all installable packages for a given compiler *)
@@ -382,10 +383,10 @@ let recover_opam_switch ~compiler ~compiler_variant ~switch_name =
 
 (* Are the packages currently installed in the opam switch compatible with
    the current cover element? *)
-let recover_opam_switch_for_cover_elt ~switch_name ~universe ~compiler cover_elt =
+let recover_opam_switch_for_plan ~switch_name ~universe ~compiler plan =
     OpamGlobalState.with_ `Lock_none @@ fun gt ->
     OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
-    let elt_installs = Lib.elt_installs cover_elt in
+    let elt_installs = Cover_elt_plan.installs plan in
     let reinstall_switch =
       not (PkgSet.subset
              sw.installed
@@ -430,7 +431,7 @@ let build
       (current_timestamp : Cover_state.t Versioned.t)
     =
     let cover_state = CCOpt.get_exn current_timestamp.head in
-    match cover_state.cur_elt.data with
+    match cover_state.cur_plan.data with
     | None ->
        build_next_cover_element ~universe ~to_install current_timestamp cover_state
     | Some cover_elt ->
@@ -454,7 +455,7 @@ let build
     else begin
       log "Computing the next element...";
       let elt, remaining =
-        Lib.compute_cover_elt
+        Cover_elt_plan.compute
           ~make_request:(Lib.make_request_maxsat ~cycles:universe_cycles)
           ~universe ~to_install in
       let change_cover_state msg cover_state =
@@ -470,7 +471,7 @@ let build
       end else begin
         let cover_state =
           { cover_state with
-            cur_elt = { cover_state.cur_elt with data = Some elt };
+            cur_plan = { cover_state.cur_plan with data = Some elt };
           } in
         let current_timestamp =
           change_cover_state "New element computed" cover_state in
@@ -483,11 +484,11 @@ let build
     ~(to_install: PkgSet.t)
     (current_timestamp : Cover_state.t Versioned.t)
     (cover_state : Cover_state.t)
-    (elt : Lib.cover_elt)
+    (plan : Cover_elt_plan.t)
     =
     (* Note: we recover after a program restart,
        but also when starting a new cover element. *)
-    recover_opam_switch_for_cover_elt ~switch_name ~universe ~compiler elt;
+    recover_opam_switch_for_plan ~switch_name ~universe ~compiler plan;
 
     (* The cover element can now be built in the current opam switch *)
     let pkgs_success, pkgs_error, pkgs_aborted =
@@ -498,7 +499,7 @@ let build
           ~ask:false
           ~requested:OpamPackage.Name.Set.empty
           ~assume_built:false
-          elt.Lib.solution
+          plan.Cover_elt_plan.solution
       in
       OpamSwitchState.drop sw;
       process_solution_result res
@@ -618,16 +619,18 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
 
         (* Archive the current cover element if necessary *)
         let cover_state, has_changed =
-          match cover_state.cur_elt.data with
+          match cover_state.cur_plan.data with
           | None -> cover_state, has_changed
-          | Some elt ->
+          | Some plan ->
              (* A cover element was already being built.
 
                 We keep this cover element if this does not result
                 in useless work: the packages remaining to build
                 are all part of the user selection.
               *)
-             let current_todo = Cover_state.nonbuilt_useful_packages cover_state in
+             let current_todo =
+               Cover_state.nonbuilt_useful_packages plan
+                 (SerializedLog.items cover_state.cur_report) in
              if PkgSet.subset current_todo selection_packages
              then begin
                log "Reusing the current cover element";
