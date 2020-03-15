@@ -401,6 +401,91 @@ let recover_opam_switch_for_plan ~switch_name ~universe ~compiler plan =
       OpamSwitchState.drop sw; OpamGlobalState.drop gt
     end
 
+(* Archive the current cover element if necessary *)
+let recover_cover_state ~(selection : PkgSet.t) (cover_state : Cover_state.t) =
+  let already_built = Cover_state.resolved_packages cover_state in
+  let selection_already_built =
+    PkgSet.inter already_built selection in
+  let selection_remaining =
+    PkgSet.diff selection already_built in
+
+  log "%d packages from the selection have already been built; \
+       remaining: %d"
+    (PkgSet.cardinal selection_already_built)
+    (PkgSet.cardinal selection_remaining);
+
+  let has_changed = false in
+
+  match cover_state.cur_plan.data with
+  | None -> cover_state, has_changed
+  | Some plan ->
+    (* A cover element was already being built.
+
+       We keep this cover element if this does not result
+       in useless work: the packages remaining to build
+       are all part of the user selection.
+    *)
+    let current_todo =
+      Cover_state.nonbuilt_useful_packages plan
+        (SerializedLog.items cover_state.cur_report) in
+    if PkgSet.subset current_todo selection
+    then begin
+      log "Reusing the current cover element";
+      cover_state, has_changed
+    end else begin
+      log "Archiving the current cover element";
+      (* NB: here we archive the current element even though it has only
+         been built partially (that's fine as long as we remember to
+         consider cover elements only as the output of the solver for
+         co-installable packages, not as the build log). *)
+      Cover_state.archive_cur_elt cover_state, true
+    end
+
+let recover_current_timestamp
+    ~(switch_state: Switch_state.t)
+    ~(repo_url: OpamUrl.t)
+    ~(selection: PkgSet.t)
+  =
+  let repo_timestamp = get_repo_timestamp repo_url in
+  match switch_state.current_timestamp.head with
+  | Some cover_state when repo_timestamp = cover_state.timestamp.data ->
+    log "Found an existing cover state for the current timestamp";
+    let cover_state, has_changed =
+      recover_cover_state ~selection cover_state in
+    if not has_changed then
+      (* Avoid polluting the git history with identity commits *)
+      switch_state.current_timestamp
+    else
+      Versioned.commit_new_head ~sync:Cover_state.sync "Update cover state"
+        { switch_state.current_timestamp with head = Some cover_state }
+  | _ ->
+    (* Start over with a fresh [current_timestamp] directory and fresh cover
+       state. *)
+    if switch_state.current_timestamp.head <> None then begin
+      log "Existing cover state is for an old repo timestamp";
+      (* There is an existing cover_state, but its timestamp does not match
+         the one of the repository. Retire the current_timestamp directory
+         before creating a new one *)
+      retire_current_timestamp
+        ~current_timestamp:switch_state.current_timestamp
+        ~past_timestamps:switch_state.past_timestamps;
+    end;
+    log "Initialize a fresh cover state";
+    (* This initializes a fresh [current_timestamp] directory; it contains
+       no data at this point (i.e. [current_timestamp.head = None]) *)
+    let current_timestamp =
+      Versioned.load_and_clean
+        ~repo:switch_state.current_timestamp.git_repo
+        ~load:(fun ~dir:_ -> assert false (* there is no data to load *)) in
+    (* Add some data to the directory (the initial cover state for our
+       packages selection). *)
+    let cover_state = Cover_state.create
+        ~dir:switch_state.current_timestamp.git_repo
+        ~timestamp:repo_timestamp in
+    Versioned.commit_new_head ~sync:Cover_state.sync "Initial cover state"
+      { current_timestamp with head = Some cover_state }
+
+
 let build
     ~(switch_name : switch)
     ~(compiler : package)
@@ -598,87 +683,8 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   log "User package selection includes %d packages"
     (PkgSet.cardinal selection_packages);
 
-  let current_timestamp =
-    let repo_timestamp = get_repo_timestamp repo_url in
-    let current_timestamp : Cover_state.t Versioned.t =
-      match switch_state.current_timestamp.head with
-      | Some cover_state when repo_timestamp = cover_state.timestamp.data ->
-        log "Found an existing cover state for the current timestamp";
-        let already_built = Cover_state.resolved_packages cover_state in
-        let selection_already_built =
-          PkgSet.inter already_built selection_packages in
-        let selection_remaining =
-          PkgSet.diff selection_packages already_built in
-
-        log "%d packages from the selection have already been built; \
-             remaining: %d"
-          (PkgSet.cardinal selection_already_built)
-          (PkgSet.cardinal selection_remaining);
-
-        let has_changed = false in
-
-        (* Archive the current cover element if necessary *)
-        let cover_state, has_changed =
-          match cover_state.cur_plan.data with
-          | None -> cover_state, has_changed
-          | Some plan ->
-             (* A cover element was already being built.
-
-                We keep this cover element if this does not result
-                in useless work: the packages remaining to build
-                are all part of the user selection.
-              *)
-             let current_todo =
-               Cover_state.nonbuilt_useful_packages plan
-                 (SerializedLog.items cover_state.cur_report) in
-             if PkgSet.subset current_todo selection_packages
-             then begin
-               log "Reusing the current cover element";
-               cover_state, has_changed
-             end else begin
-               log "Archiving the current cover element";
-               (* NB: here we archive the current element even though it has only
-                  been built partially (that's fine as long as we remember to
-                  consider cover elements only as the output of the solver for
-                  co-installable packages, not as the build log). *)
-               Cover_state.archive_cur_elt cover_state, true
-             end
-        in
-        (* Avoid polluting the git history with identity commits *)
-        if not has_changed then switch_state.current_timestamp
-        else
-          Versioned.commit_new_head ~sync:Cover_state.sync "Update cover state"
-            { switch_state.current_timestamp with head = Some cover_state }
-      | _ ->
-        (* Start over with a fresh [current_timestamp] directory and fresh cover
-           state. *)
-        if switch_state.current_timestamp.head <> None then begin
-          log "Existing cover state is for an old repo timestamp";
-          (* There is an existing cover_state, but its timestamp does not match
-             the one of the repository. Retire the current_timestamp directory
-             before creating a new one *)
-          retire_current_timestamp
-            ~current_timestamp:switch_state.current_timestamp
-            ~past_timestamps:switch_state.past_timestamps;
-        end;
-        log "Initialize a fresh cover state";
-        (* This initializes a fresh [current_timestamp] directory; it contains
-           no data at this point (i.e. [current_timestamp.head = None]) *)
-        let current_timestamp =
-          Versioned.load_and_clean
-            ~repo:switch_state.current_timestamp.git_repo
-            ~load:(fun ~dir:_ -> assert false (* there is no data to load *)) in
-        (* Add some data to the directory (the initial cover state for our
-           packages selection). *)
-        let cover_state = Cover_state.create
-            ~dir:switch_state.current_timestamp.git_repo
-            ~timestamp:repo_timestamp in
-        Versioned.commit_new_head ~sync:Cover_state.sync "Initial cover state"
-          { current_timestamp with head = Some cover_state }
-    in
-    current_timestamp
-  in
-  (* An adequate cover_state has been fetched or created. *)
+  let current_timestamp : Cover_state.t Versioned.t =
+    recover_current_timestamp ~switch_state ~repo_url ~selection:selection_packages in
 
   let universe, to_install =
     match current_timestamp.head with
