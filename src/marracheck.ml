@@ -288,7 +288,9 @@ let retire_current_timestamp
       current_timestamp.git_repo
       File.Op.(past_timestamps / (cur_basename ^ "_" ^ timestamp_s))
 
+(* Recover or initialize an opam_root with an up-to-date repository *)
 let recover_opam_root ~workdir ~repo_url opamroot =
+  (* Is there anything in the opamroot? *)
   match OpamFile.exists (OpamPath.config opamroot) with
   | false ->
     (* No: do "opam init" *)
@@ -327,9 +329,60 @@ let recover_opam_root ~workdir ~repo_url opamroot =
     end;
     log "Done updating the repository."
 
+let recover_opam_switch ~compiler ~compiler_variant ~switch_name =
+  OpamGlobalState.with_ `Lock_write @@ fun gt ->
+  OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+  let (gt, sw) =
+    if not (OpamGlobalState.switch_exists gt switch_name) then begin
+      log "Creating new opam switch %s" compiler_variant;
+      let (gt, sw) = create_new_switch gt ~switch_name ~compiler in
+      (gt, OpamSwitchState.unlock sw)
+    end else begin
+      log "Existing opam switch %s found" compiler_variant;
+      (* Check that the switch repositories are what we expect
+         (just our repository)
+         (this is a sanity check; it is very most likely the case) *)
+      begin
+        OpamSwitchState.with_ `Lock_none gt ~switch:switch_name @@ fun sw ->
+        let global_repos = OpamGlobalState.repos_list gt in
+        let sw_repos = OpamSwitchState.repos_list sw in
+        let sw_repos = if sw_repos = [] then (
+          log "WARN? Switch has no repos; using the global list of repos";
+          global_repos
+        ) else sw_repos in
+        if sw_repos <> [OpamRepositoryName.default] then
+          fatal "The existing switch has unexpected repositories \
+                 (expected only \"%s\")"
+            OpamRepositoryName.(to_string default)
+      end;
+      (* Reinstall the switch if the compiler is not one of the base
+         packages, or if it is not installed *)
+      let sw_base_installed =
+        OpamSwitchState.with_ `Lock_none gt ~switch:switch_name
+          (fun sw ->
+             PkgSet.inter
+               sw.compiler_packages sw.installed) in
+      if not (PkgSet.mem compiler sw_base_installed) then begin
+        log "Either the compiler %s is not installed or not in the \
+             base packages of the switch" (OpamPackage.to_string compiler);
+        log "Creating a new switch instead";
+        let (sw, gt) = recreate_switch gt ~switch_name ~compiler in
+        (gt, sw)
+      end else begin
+        let sw = OpamSwitchAction.set_current_switch
+            `Lock_write gt ~rt switch_name in
+        (OpamGlobalState.unlock gt, sw)
+      end
+    end
+  in
+  OpamGlobalState.drop gt;
+  OpamRepositoryState.drop rt;
+  OpamSwitchState.drop sw;
+  ()
+
 (* Are the packages currently installed in the opam switch compatible with
    the current cover element? *)
-let recover_opam_switch ~switch_name ~universe  ~compiler cover_elt =
+let recover_opam_switch_for_cover_elt ~switch_name ~universe ~compiler cover_elt =
     OpamGlobalState.with_ `Lock_none @@ fun gt ->
     OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
     let elt_installs = Lib.elt_installs cover_elt in
@@ -434,7 +487,7 @@ let build
     =
     (* Note: we recover after a program restart,
        but also when starting a new cover element. *)
-    recover_opam_switch ~switch_name ~universe ~compiler elt;
+    recover_opam_switch_for_cover_elt ~switch_name ~universe ~compiler elt;
 
     (* The cover element can now be built in the current opam switch *)
     let pkgs_success, pkgs_error, pkgs_aborted =
@@ -510,62 +563,11 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
     ~no_env_notice:true
     ();
 
-  (* Is there anything in the opamroot? *)
   recover_opam_root ~workdir ~repo_url opamroot;
-
   (* We now have an initialized opamroot with an updated repository *)
 
   let switch_name = OpamSwitch.of_string compiler_variant in
-  begin
-    OpamGlobalState.with_ `Lock_write @@ fun gt ->
-    OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-    let (gt, sw) =
-      if not (OpamGlobalState.switch_exists gt switch_name) then begin
-        log "Creating new opam switch %s" compiler_variant;
-        let (gt, sw) = create_new_switch gt ~switch_name ~compiler in
-        (gt, OpamSwitchState.unlock sw)
-      end else begin
-        log "Existing opam switch %s found" compiler_variant;
-        (* Check that the switch repositories are what we expect
-           (just our repository)
-           (this is a sanity check; it is very most likely the case) *)
-        begin
-          OpamSwitchState.with_ `Lock_none gt ~switch:switch_name @@ fun sw ->
-          let global_repos = OpamGlobalState.repos_list gt in
-          let sw_repos = OpamSwitchState.repos_list sw in
-          let sw_repos = if sw_repos = [] then (
-            log "WARN? Switch has no repos; using the global list of repos";
-            global_repos
-          ) else sw_repos in
-          if sw_repos <> [OpamRepositoryName.default] then
-            fatal "The existing switch has unexpected repositories \
-                   (expected only \"%s\")"
-              OpamRepositoryName.(to_string default)
-        end;
-        (* Reinstall the switch if the compiler is not one of the base
-           packages, or if it is not installed *)
-        let sw_base_installed =
-          OpamSwitchState.with_ `Lock_none gt ~switch:switch_name
-            (fun sw ->
-               PkgSet.inter
-                 sw.compiler_packages sw.installed) in
-        if not (PkgSet.mem compiler sw_base_installed) then begin
-          log "Either the compiler %s is not installed or not in the \
-               base packages of the switch" (OpamPackage.to_string compiler);
-          log "Creating a new switch instead";
-          let (sw, gt) = recreate_switch gt ~switch_name ~compiler in
-          (gt, sw)
-        end else begin
-          let sw = OpamSwitchAction.set_current_switch
-              `Lock_write gt ~rt switch_name in
-          (OpamGlobalState.unlock gt, sw)
-        end
-      end
-    in
-    OpamGlobalState.drop gt;
-    OpamRepositoryState.drop rt;
-    OpamSwitchState.drop sw
-  end;
+  recover_opam_switch ~compiler ~compiler_variant ~switch_name;
 
   OpamStateConfig.update ~current_switch:switch_name ();
   log "Using opam switch %s" (OpamSwitch.to_string switch_name);
