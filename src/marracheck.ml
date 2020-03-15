@@ -5,6 +5,7 @@ open Utils
 open State
 module File = OpamFilename
 module Dir = OpamFilename.Dir
+module PkgSet = OpamPackage.Set
 
 type package_selection = [
   | `All (* all installable packages for a given compiler *)
@@ -314,68 +315,62 @@ let rec build_loop
     (current_timestamp : Cover_state.t Versioned.t)
   =
   let cover_state = CCOpt.get_exn current_timestamp.head in
-  let broken_pkgs =
-    SerializedLog.items cover_state.report
-    |> CCList.filter_map (fun (pkg, report) ->
-         match report with Error _ -> Some pkg | _ -> None)
-    |> PkgSet.of_list
-  in
+  let broken_pkgs = Cover_state.broken_packages cover_state in
+  (* TODO: maybe we don't need to filter out *past* broken packages
+     (currently included in the broken_packages result), we can
+     maintain the invariant that the universe never contains past
+     broken packages *)
   let universe =
     filter_universe (fun p -> not (PkgSet.mem p broken_pkgs))
       universe
   in
   match cover_state.cur_elt.data with
   | None ->
-    begin match cover_state.build_status.data with
-      | Build_finished_with_uninst uninst ->
-        log "Finished building all packages of the selection \
-             (%d uninstallable packages)"
-          (PkgSet.cardinal uninst);
+    if PkgSet.is_empty cover_state.future.data then begin
+      log "Finished building all packages of the selection \
+           (%d uninstallable packages)"
+        (PkgSet.cardinal cover_state.uninst.data);
+      current_timestamp
+    end else begin
+      let to_install = cover_state.future.data in
+      log "Computing the next element...";
+      let elt, remaining =
+        Lib.compute_cover_elt
+          ~make_request:(Lib.make_request_maxsat ~cycles:universe_cycles)
+          ~universe ~to_install in
+      let cover_state, msg =
+        if PkgSet.is_empty elt.useful then begin
+          assert (PkgSet.equal to_install remaining);
+          { cover_state with
+            future = { cover_state.future with data = PkgSet.empty };
+            uninst = { cover_state.uninst with data = remaining };
+          },
+          "No new element; build loop done"
+        end else
+          { cover_state with
+            cur_elt = { cover_state.cur_elt with data = Some elt };
+            future = { cover_state.future with data = remaining };
+          },
+          "New element computed"
+      in
+      let current_timestamp =
+        Versioned.commit_new_head ~sync:Cover_state.sync msg
+          { current_timestamp with head = Some cover_state } in
+      build_loop ~switch_name ~compiler ~universe ~universe_cycles
         current_timestamp
-      | Build_remaining to_install ->
-        log "Computing the next element...";
-        let elt, remaining =
-          Lib.compute_cover_elt
-            ~make_request:(Lib.make_request_maxsat ~cycles:universe_cycles)
-            ~universe ~to_install in
-        let cover_state, msg =
-          if PkgSet.is_empty elt.useful then begin
-            assert (PkgSet.equal to_install remaining);
-            { cover_state with
-              build_status = { cover_state.build_status with
-                               data = Build_finished_with_uninst remaining } },
-            "No new element; build loop done"
-          end else
-            { cover_state with
-              cur_elt = { cover_state.cur_elt with data = Some elt };
-              build_status = { cover_state.build_status with
-                               data = Build_remaining remaining } },
-            "New element computed"
-        in
-        let current_timestamp =
-          Versioned.commit_new_head ~sync:Cover_state.sync msg
-            { current_timestamp with head = Some cover_state } in
-        build_loop ~switch_name ~compiler ~universe ~universe_cycles
-          current_timestamp
     end
 
   | Some elt ->
-    let status_remaining =
-      match cover_state.build_status.data with
-      | Build_finished_with_uninst _ -> assert false
-      | Build_remaining pkgs -> pkgs
-    in
-
     (* Are the packages currently installed in the opam switch compatible with
        the current element? *)
     OpamGlobalState.with_ `Lock_none @@ fun gt ->
     OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
-    let elt_solution_installs = OpamSolver.new_packages elt.Lib.solution in
+    let elt_installs = Lib.elt_installs elt in
     let reinstall_switch =
       not (PkgSet.subset
              sw.installed
              (PkgSet.union
-                elt_solution_installs universe.u_installed))
+                elt_installs universe.u_installed))
     in
     if reinstall_switch then begin
       log "Re-creating a fresh opam switch.";
@@ -402,18 +397,11 @@ let rec build_loop
     in
 
     (* Update the cover state *)
-    let remaining =
-      PkgSet.(Op.(
-        status_remaining
-        -- (of_list (List.map fst pkgs_success))
-        -- (of_list (List.map fst pkgs_error))
-      )) in
     let cover_state =
       cover_state
       |> Cover_state.add_items_to_report pkgs_success
       |> Cover_state.add_items_to_report pkgs_error
       |> Cover_state.add_items_to_report pkgs_aborted
-      |> Cover_state.set_remaining remaining
       |> Cover_state.archive_cur_elt
     in
     let current_timestamp =
@@ -580,24 +568,13 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   let current_timestamp =
     let repo_timestamp = get_repo_timestamp repo_url in
     let selection_packages = compute_selection_packages universe in
-    log "User packages selection includes %d packages"
+    log "User package selection includes %d packages"
       (PkgSet.cardinal selection_packages);
     let current_timestamp : Cover_state.t Versioned.t =
       match switch_state.current_timestamp.head with
       | Some cover_state when repo_timestamp = cover_state.timestamp.data ->
-        (* We might have been in the process of building packages from the
-           (current) last element of the cover, and we might want to reuse that
-           work.
-
-           - if we were in the middle of building packages for the current
-             last element of the cover, and the remaining packages are included
-             in the package selection, then continue;
-
-           - otherwise, just compute a new cover element for the current
-             package selection.
-        *)
         log "Found an existing cover state for the current timestamp";
-        let already_built = Cover_state.already_built cover_state in
+        let already_built = Cover_state.resolved_packages cover_state in
         let selection_already_built =
           PkgSet.inter already_built selection_packages in
         let selection_remaining =
@@ -608,35 +585,39 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
           (PkgSet.cardinal selection_already_built)
           (PkgSet.cardinal selection_remaining);
 
-        (* Update [cover_state] with the selection packages *)
+        let has_changed = false in
+
+        (* Update the cover state with the selection packages *)
         let cover_state, has_changed =
-          let is_resumable elt =
-            let open PkgSet in
-            let remaining = diff elt.Lib.useful already_built in
-            not (is_empty remaining) && subset remaining selection_remaining in
+          match Cover_state.update_package_selection selection_packages cover_state with
+          | None -> cover_state, has_changed
+          | Some cover_state' -> cover_state', true
+        in
+
+        (* Archive the current cover element if necessary *)
+        let cover_state, has_changed =
           match cover_state.cur_elt.data with
-          | Some elt when is_resumable elt ->
-            log "Reusing the current cover element";
-            (* Update the remaining build packages according to the selection *)
-            let remaining =
-              PkgSet.diff selection_remaining elt.Lib.useful in
-            let cover_state' = Cover_state.set_remaining remaining cover_state in
-            let has_changed =
-              not (Cover_state.eq_build_status
-                     cover_state.build_status.data
-                     cover_state'.build_status.data) in
-            cover_state', has_changed
-          | _ ->
-            log "Discarding the current cover element";
-            (* NB: here we archive the current element even though it has only
-               been built partially (that's fine as long as we remember to
-               consider cover elements only as the output of the solver for
-               co-installable packages, not as the build log). *)
-            let cover_state = Cover_state.archive_cur_elt cover_state in
-            { cover_state with
-              build_status = { cover_state.build_status with
-                               data = Build_remaining selection_remaining } },
-            true
+          | None -> cover_state, has_changed
+          | Some elt ->
+             (* A cover element was already being built.
+
+                We keep this cover element if this does not result
+                in useless work: the packages remaining to build
+                are all part of the user selection.
+              *)
+             let current_todo = Cover_state.nonbuilt_useful_packages cover_state in
+             if PkgSet.subset current_todo selection_packages
+             then begin
+               log "Reusing the current cover element";
+               cover_state, has_changed
+             end else begin
+               log "Archiving the current cover element";
+               (* NB: here we archive the current element even though it has only
+                  been built partially (that's fine as long as we remember to
+                  consider cover elements only as the output of the solver for
+                  co-installable packages, not as the build log). *)
+               Cover_state.archive_cur_elt cover_state, true
+             end
         in
         (* Avoid polluting the git history with identity commits *)
         if not has_changed then switch_state.current_timestamp

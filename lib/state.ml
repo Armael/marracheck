@@ -13,10 +13,11 @@ let past_timestamps_path = "past_timestamps"
 
 (* Relative to a current_timestamp.git directory *)
 let timestamp_path = "timestamp"
-let cover_path = "cover.json"
+let past_elts_path = "past_elts.json"
 let cur_elt_path = "cur_elt.json"
-let report_path = "report.json"
-let build_status_path = "build_status.json"
+let cur_report_path = "report.json"
+let future_path = "future.json"
+let uninst_path = "uninst.json"
 
 module Versioned = struct
   type 'a t = {
@@ -83,8 +84,9 @@ module Serialized = struct
     OpamSystem.write (OpamFilename.to_string s.path) s.data;
     s
 
-  let load_json ~file (of_json : Json.t -> 'a) : 'a t =
+  let load_json ~file (of_json : Json.value -> 'a) : 'a t =
     let j = read_json file in
+    let j = Json.value j in
     { data = of_json j; path = file }
 
   let sync_json (s : 'a t) (to_json : 'a -> Json.t) : 'a t =
@@ -136,7 +138,7 @@ module SerializedLog = struct
       let ppf = Format.formatter_of_out_channel chan in
       List.iter (fun item ->
           Format.fprintf ppf "%a@."
-            Yojson.Basic.pp
+            (Yojson.Basic.pretty_print ?std:None)
             (yojson_of_value (to_json item :> Json.value)))
         (List.rev t.new_data));
     {
@@ -202,7 +204,9 @@ let package_report_to_json = function
          ("deps", PkgSet.to_json deps) ]
 
 module Cover = struct
-  type t = Lib.cover_elt list
+  type elt_report = package_report OpamPackage.Map.t
+  type elt = Lib.cover_elt * elt_report
+  type t = elt list
 
   let cover_elt_of_json (j: Json.value): Lib.cover_elt =
     try
@@ -213,77 +217,157 @@ module Cover = struct
               |> get_opt;
             useful =
               PkgSet.of_json (List.assoc "useful" l) |> get_opt; }
-    with Not_found -> Json.parse_error `Null "" (* XX *)
+    with Not_found -> Json.parse_error j "invalid cover element"
 
   let cover_elt_to_json elt =
     `O [ ("solution", OpamSolver.solution_to_json elt.Lib.solution);
          ("useful", PkgSet.to_json elt.Lib.useful) ]
 
-  let of_json (j: Json.t): t =
-    Json.get_list cover_elt_of_json (Json.value j)
+  let cover_report_of_json (j : Json.value): elt_report =
+    let report_of_json j = Some (package_report_of_json j) in
+    match OpamPackage.Map.of_json report_of_json j with
+    | Some r -> r
+    | None -> Json.parse_error j "invalid cover report"
 
-  let to_json (cover: t): Json.t =
-    Json.list cover_elt_to_json cover
+  let cover_report_to_json (report: elt_report) =
+    OpamPackage.Map.to_json package_report_to_json report
+
+  let elt_of_json (j: Json.value): elt =
+    Json.get_pair cover_elt_of_json cover_report_of_json j
+
+  let elt_to_json (elt: elt): Json.value =
+    Json.pair cover_elt_to_json cover_report_to_json elt
+
+  let of_json (j: Json.value): t =
+    Json.get_list elt_of_json j
+
+  let to_json (cover : t): Json.t =
+    Json.list elt_to_json cover
 end
 
 module Cover_state = struct
   type report_item = OpamPackage.t * package_report
-  type build_status =
-    | Build_remaining of PkgSet.t
-    | Build_finished_with_uninst of PkgSet.t
-
-  let eq_build_status st1 st2 =
-    match st1, st2 with
-    | Build_remaining s1, Build_remaining s2
-    | Build_finished_with_uninst s1, Build_finished_with_uninst s2 ->
-      PkgSet.equal s1 s2
-    | _ -> false
 
   type t = {
     timestamp : timestamp Serialized.t;
-    cover : Cover.t Serialized.t;
+    past_elts : Cover.t Serialized.t;
     cur_elt : Lib.cover_elt option Serialized.t;
-    report : report_item SerializedLog.t;
-    build_status : build_status Serialized.t;
+    cur_report : report_item SerializedLog.t;
+    future : OpamPackage.Set.t Serialized.t;
+      (** The packages that have not been built in the past (past_elts)
+          and are not part of the current cover element. *)
+    uninst: OpamPackage.Set.t Serialized.t;
   }
 
-  let already_built st =
-    SerializedLog.items st.report
-    |> List.filter_map (fun (pkg, report) ->
-         match report with
-           | Success _ | Error _ -> Some pkg
-           | Aborted _ -> None
-       )
-    |> PkgSet.of_list
+  let nonbuilt_useful_packages st =
+    match st.cur_elt.data with
+    | None -> PkgSet.empty
+    | Some elt ->
+       List.fold_left
+         (fun set (package, _) -> PkgSet.remove package set)
+         elt.Lib.useful
+         (SerializedLog.items st.cur_report)
+
+  let broken_packages st =
+    let select_broken (pkg, report) =
+      match report with
+      | Error _ -> Some pkg
+      | Success _ | Aborted _ -> None in
+    let elt_broken (_sol, report) =
+      PkgMap.to_seq report
+      |> Seq.filter_map select_broken
+      |> PkgSet.of_seq
+    in
+    let cur_broken =
+      List.filter_map select_broken (SerializedLog.items st.cur_report)
+      |> PkgSet.of_list in
+    List.fold_left
+      (fun set elt -> PkgSet.union set (elt_broken elt))
+      cur_broken st.past_elts.data
+
+  (* we want the *resolved* packages: succeeded, failed, and uninstallable *)
+  let select_resolved (pkg, report) =
+    match report with
+      | Success _ | Error _ -> Some pkg
+      | Aborted _ -> None
+
+  let past_resolved_packages st =
+    let resolved report =
+      PkgMap.to_seq report
+      |> Seq.filter_map select_resolved
+      |> PkgSet.of_seq
+    in
+    List.fold_left
+      (fun set (_elt, report) -> PkgSet.union set (resolved report))
+      st.uninst.data
+      st.past_elts.data
+
+  let resolved_packages st =
+    let cur_resolved =
+      SerializedLog.items st.cur_report
+      |> List.to_seq
+      |> Seq.filter_map select_resolved
+      |> PkgSet.of_seq
+    in
+    PkgSet.union cur_resolved (past_resolved_packages st)
 
   let create ~dir ~timestamp ~packages =
     let open OpamFilename in
     { timestamp = { data = timestamp; path = Op.(dir // timestamp_path) };
-      cover = { data = []; path = Op.(dir // cover_path) };
+      past_elts = { data = []; path = Op.(dir // past_elts_path) };
       cur_elt = { data = None; path = Op.(dir // cur_elt_path) };
-      report = { old_data = []; new_data = []; path = Op.(dir // report_path) };
-      build_status = { data = Build_remaining packages;
-                      path = Op.(dir // build_status_path) };
+      cur_report = { old_data = []; new_data = []; path = Op.(dir // cur_report_path) };
+      future = { data = packages; path = Op.(dir // future_path) };
+      uninst = { data = PkgSet.empty; path = Op.(dir // uninst_path) };
     }
+
+  let archive_report report =
+    let add_if_resolved package report set =
+      match report with
+        | Success _ | Error _ -> PkgSet.add package set
+        | Aborted _ -> set in
+    List.fold_left (fun (archive, resolved) (package, package_report) ->
+        PkgMap.add package package_report archive,
+         add_if_resolved package package_report resolved
+      ) (PkgMap.empty, PkgSet.empty) report
 
   let archive_cur_elt (st: t): t =
     match st.cur_elt.data with
     | None -> st
-    | Some elt ->
+    | Some cover_elt ->
+      (* Note: we can archive a cover element before it is done building
+         all its packages, so some packages may be missing from the report.
+         One can compute the 'resolved' packages from the report alone,
+         but not the 'remaining' packages. *)
+      let (report, resolved) = archive_report (SerializedLog.items st.cur_report) in
+      let remaining = PkgSet.diff cover_elt.Lib.useful resolved in
+      let elt = (cover_elt, report) in
       { st with
-        cover = { st.cover with data = elt :: st.cover.data };
-        cur_elt = { data = None; path = st.cur_elt.path } }
+        past_elts = { st.past_elts with data = elt :: st.past_elts.data };
+        cur_elt = { data = None; path = st.cur_elt.path };
+        future = { st.future with data = PkgSet.union st.future.data remaining };
+      }
 
-  let set_remaining (remaining: PkgSet.t) (st: t): t =
-    { st with
-      build_status = { st.build_status with
-                       data = Build_remaining remaining } }
+  let update_package_selection (selection: PkgSet.t) (st: t): t option =
+    let future =
+      let resolved = past_resolved_packages st in
+      let current =
+        match st.cur_elt.data with
+          | None -> PkgSet.empty
+          | Some elt -> elt.Lib.useful in
+      let open PkgSet.Op in
+      selection -- resolved -- current
+    in
+    if PkgSet.equal future st.future.data
+    then None
+    else Some { st with
+                future = { st.future with data = future } }
 
   let add_item_to_report item (st: t): t =
-    { st with report = SerializedLog.add_item item st.report }
+    { st with cur_report = SerializedLog.add_item item st.cur_report }
 
   let add_items_to_report items (st: t): t =
-    { st with report = SerializedLog.add_items items st.report }
+    { st with cur_report = SerializedLog.add_items items st.cur_report }
 
   (* This assumes that the files already exist on the filesystem in a valid
      state *)
@@ -294,7 +378,7 @@ module Cover_state = struct
         Json.parse_error `Null "" (* XX *) in
     let get_opt =
       function Some x -> x | None -> Json.parse_error `Null "" (* XX *) in
-    let pkg_report_of_json j =
+    let report_item_of_json j =
       let j = Json.value j in
       let l = Json.get_dict j in
       let pkg = assoc "package" l in
@@ -310,27 +394,18 @@ module Cover_state = struct
         fatal "In %s: invalid format"
           OpamFilename.(prettify Op.(dir // cur_elt_path))
     in
-    let build_status_of_json j =
-      let err () = fatal "In %s: invalid format"
-          (OpamFilename.(prettify Op.(dir // build_status_path))) in
-      try
-        begin match j with
-          | `O [ "build_remaining", pkgs ] ->
-            Build_remaining (get_opt (PkgSet.of_json pkgs))
-          | `O [ "build_finished_with_uninst", pkgs ] ->
-            Build_finished_with_uninst (get_opt (PkgSet.of_json pkgs))
-          | _ -> err ()
-        end with Json.Parse_error (_,_) -> err ()
-    in
-    { timestamp = Serialized.load_raw ~file:Op.(dir // timestamp_path);
-      cover = Serialized.load_json ~file:Op.(dir // cover_path) Cover.of_json;
-      cur_elt = Serialized.load_json ~file:Op.(dir // cur_elt_path)
-          cur_elt_of_json;
-      report =
-        SerializedLog.load_json ~file:Op.(dir // report_path) pkg_report_of_json;
-      build_status =
-        Serialized.load_json ~file:Op.(dir // build_status_path)
-          build_status_of_json; }
+    let future_of_json j =
+      get_opt (PkgSet.of_json (Json.get_dict j |> assoc "future")) in
+    let uninst_of_json j =
+      get_opt (PkgSet.of_json (Json.get_dict j |> assoc "uninst")) in
+    {
+      timestamp = Serialized.load_raw ~file:Op.(dir // timestamp_path);
+      past_elts = Serialized.load_json ~file:Op.(dir // past_elts_path) Cover.of_json;
+      cur_elt = Serialized.load_json ~file:Op.(dir // cur_elt_path) cur_elt_of_json;
+      cur_report = SerializedLog.load_json ~file:Op.(dir // cur_report_path) report_item_of_json;
+      future = Serialized.load_json ~file:Op.(dir // future_path) future_of_json;
+      uninst = Serialized.load_json ~file:Op.(dir // uninst_path) uninst_of_json;
+    }
 
   let sync state : t =
     let report_item_to_json (pkg, pkg_report) =
@@ -340,18 +415,16 @@ module Cover_state = struct
     let cur_elt_to_json = function
       | None -> `A []
       | Some elt -> `A [ Cover.cover_elt_to_json elt ] in
-    let build_status_to_json = function
-      | Build_remaining pkgs ->
-        `O [ "build_remaining", PkgSet.to_json pkgs ]
-      | Build_finished_with_uninst pkgs ->
-        `O [ "build_finished_with_uninst", PkgSet.to_json pkgs ]
-    in
+    let future_to_json set = `O [ "future", PkgSet.to_json set ] in
+    let uninst_to_json set = `O [ "uninst", PkgSet.to_json set ] in
+
     let timestamp = Serialized.sync_raw state.timestamp in
-    let cover = Serialized.sync_json state.cover Cover.to_json in
+    let past_elts = Serialized.sync_json state.past_elts Cover.to_json in
     let cur_elt = Serialized.sync_json state.cur_elt cur_elt_to_json in
-    let report = SerializedLog.sync_json state.report report_item_to_json in
-    let build_status = Serialized.sync_json state.build_status build_status_to_json in
-    { timestamp; cover; cur_elt; report; build_status }
+    let cur_report = SerializedLog.sync_json state.cur_report report_item_to_json in
+    let future = Serialized.sync_json state.future future_to_json in
+    let uninst = Serialized.sync_json state.uninst uninst_to_json in
+    { timestamp; past_elts; cur_elt; cur_report; future; uninst }
 end
 
 module Switch_state = struct
