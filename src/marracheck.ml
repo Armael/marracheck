@@ -315,37 +315,31 @@ let rec build_loop
   let cover_state = CCOpt.get_exn current_timestamp.head in
   match cover_state.cur_elt.data with
   | None ->
-    if PkgSet.is_empty to_install then begin
-      log "Finished building all packages of the selection \
-           (%d uninstallable packages)"
-        (PkgSet.cardinal cover_state.uninst.data);
-      current_timestamp
-    end else begin
-      let cover_state, to_install, msg =
-        log "Computing the next element...";
-        let elt, remaining =
-          Lib.compute_cover_elt
-            ~make_request:(Lib.make_request_maxsat ~cycles:universe_cycles)
-            ~universe ~to_install in
-        if PkgSet.is_empty elt.useful then begin
-          assert (PkgSet.equal to_install remaining);
-          { cover_state with
-            uninst = { cover_state.uninst with data = remaining };
-          },
-          PkgSet.empty,
-          "No new element; build loop done"
-        end else
-          { cover_state with
-            cur_elt = { cover_state.cur_elt with data = Some elt };
-          },
-          to_install,
-          "New element computed"
-      in
-      let current_timestamp =
+    if PkgSet.is_empty to_install then
+      end_build_loop current_timestamp
+    else begin
+      log "Computing the next element...";
+      let elt, remaining =
+        Lib.compute_cover_elt
+          ~make_request:(Lib.make_request_maxsat ~cycles:universe_cycles)
+          ~universe ~to_install in
+      let change_cover_state msg cover_state =
         Versioned.commit_new_head ~sync:Cover_state.sync msg
           { current_timestamp with head = Some cover_state } in
-      build_loop ~switch_name ~compiler ~universe ~universe_cycles ~to_install
-        current_timestamp
+      if PkgSet.is_empty elt.useful then begin
+        assert (PkgSet.equal to_install remaining);
+        { cover_state with
+          uninst = { cover_state.uninst with data = remaining };
+        }
+        |> change_cover_state "No new element; build loop done"
+        |> end_build_loop
+      end else begin
+        { cover_state with
+          cur_elt = { cover_state.cur_elt with data = Some elt };
+        }
+        |> change_cover_state "New element computed"
+        |> build_loop ~switch_name ~compiler ~universe ~universe_cycles ~to_install
+      end
     end
 
   | Some elt ->
@@ -405,6 +399,13 @@ let rec build_loop
 
     build_loop ~switch_name ~compiler ~universe ~universe_cycles ~to_install
       current_timestamp
+
+and end_build_loop current_timestamp =
+  let cover_state = CCOpt.get_exn current_timestamp.head in
+  log "Finished building all packages of the selection \
+       (%d uninstallable packages)"
+    (PkgSet.cardinal cover_state.uninst.data);
+  current_timestamp
 
 let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   let workdir = get_or_fatal (validate_workdir working_dir)
