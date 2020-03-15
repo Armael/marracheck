@@ -1,7 +1,6 @@
 DUNE_BUILD=dune build --profile release
 
 all:
-	$(DUNE_BUILD) src/worker.exe
 	$(DUNE_BUILD) src/opam_bin_cache.exe
 	$(DUNE_BUILD) src/marracheck.exe
 

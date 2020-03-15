@@ -1,6 +1,6 @@
 (executables
-  (names worker marracheck)
-  (modules worker marracheck)
+  (names marracheck)
+  (modules marracheck)
   (libraries marracheck_lib ezjsonm containers cmdliner))
 
 (executable
