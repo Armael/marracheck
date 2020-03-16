@@ -20,41 +20,41 @@ let cur_plan_path = "cur_plan.json"
 let cur_report_path = "cur_report.json"
 let uninst_path = "uninst.json"
 
-module Versioned = struct
+module Repo = struct
   type 'a t = {
     head : 'a option;
-    git_repo : dirname;
+    path : dirname;
   }
 
   let load_and_clean
-      ~(repo : dirname)
+      ~(path : dirname)
       ~(load : dir:dirname -> 'a)
     : 'a t =
     let open OpamProcess in
-    let repo_s = OpamFilename.Dir.to_string repo in
-    mkdir repo;
-    if not (OpamGit.VCS.exists repo) then begin
-      let cmd = command ~dir:repo_s "git" [ "init" ] in
+    let path_s = OpamFilename.Dir.to_string path in
+    mkdir path;
+    if not (OpamGit.VCS.exists path) then begin
+      let cmd = command ~dir:path_s "git" [ "init" ] in
       run cmd |> must_succeed cmd
     end;
     (* cleanup uncommited modifications *)
-    if Job.run (OpamGit.VCS.is_dirty repo) then begin
+    if Job.run (OpamGit.VCS.is_dirty path) then begin
       Job.of_list [
-        command ~dir:repo_s "git" [ "reset"; "--hard"; "HEAD" ];
-        command ~dir:repo_s "git" [ "clean"; "-xfd" ];
+        command ~dir:path_s "git" [ "reset"; "--hard"; "HEAD" ];
+        command ~dir:path_s "git" [ "clean"; "-xfd" ];
       ] |> Job.run
       |> OpamStd.Option.iter (fun (cmd, res) -> must_succeed cmd res)
     end;
-    match Job.run (OpamGit.VCS.revision repo) with
+    match Job.run (OpamGit.VCS.revision path) with
     | None ->
       (* No commits recorded *)
-      { head = None; git_repo = repo }
+      { path; head = None }
     | Some _ ->
-      { head = Some (load ~dir:repo); git_repo = repo }
+      { path; head = Some (load ~dir:path) }
 
   let commit_new_head ~(sync : 'a -> 'a) msg (st: 'a t) : 'a t =
     let open OpamProcess in
-    let repo_s = OpamFilename.Dir.to_string st.git_repo in
+    let path_s = OpamFilename.Dir.to_string st.path in
     match st.head with
     | None -> assert false
     | Some data ->
@@ -62,8 +62,8 @@ module Versioned = struct
       let msg = if msg = "" then "-" else msg in
       let () =
         Job.of_list [
-          command ~dir:repo_s "git" [ "add"; "*"; ];
-          command ~dir:repo_s "git" [ "commit"; "-a"; "--allow-empty"; "-m"; msg ];
+          command ~dir:path_s "git" [ "add"; "*"; ];
+          command ~dir:path_s "git" [ "commit"; "-a"; "--allow-empty"; "-m"; msg ];
         ]
         |> Job.run
         |> OpamStd.Option.iter (fun (cmd, res) -> must_succeed cmd res)
@@ -397,7 +397,7 @@ module Switch_state = struct
   type t = {
     path : dirname;
     log : filename;
-    current_timestamp : Cover_state.t Versioned.t;
+    current_timestamp : Cover_state.t Repo.t;
     past_timestamps : dirname;
   }
 end
@@ -420,8 +420,8 @@ module Work_state = struct
       mkdir Op.(switch_dir / current_timestamp_path);
       mkdir Op.(switch_dir / past_timestamps_path);
       let current_timestamp =
-        Versioned.load_and_clean
-          ~repo:Op.(switch_dir / current_timestamp_path)
+        Repo.load_and_clean
+          ~path:Op.(switch_dir / current_timestamp_path)
           ~load:Cover_state.load
       in
       { path = switch_dir;

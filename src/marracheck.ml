@@ -285,19 +285,19 @@ let process_solution_result (result: solution_result) =
     aborted actions_result.actions_aborted
 
 let retire_current_timestamp
-    ~(current_timestamp : Cover_state.t Versioned.t)
+    ~(current_timestamp : Cover_state.t Repo.t)
     ~(past_timestamps : dirname)
   =
-  match current_timestamp.Versioned.head with
+  match current_timestamp.Repo.head with
   | None ->
     (* We could probably also also do nothing ... *)
     assert false
   | Some cover_state ->
     let timestamp_s = cover_state.Cover_state.timestamp.data in
     let cur_basename =
-      File.Base.to_string (File.basename_dir current_timestamp.git_repo) in
+      File.Base.to_string (File.basename_dir current_timestamp.path) in
     mv
-      current_timestamp.git_repo
+      current_timestamp.path
       File.Op.(past_timestamps / (cur_basename ^ "_" ^ timestamp_s))
 
 (* Recover or initialize an opam_root with an up-to-date repository *)
@@ -467,7 +467,7 @@ let recover_current_timestamp
       (* Avoid polluting the git history with identity commits *)
       switch_state.current_timestamp
     else
-      Versioned.commit_new_head ~sync:Cover_state.sync "Update cover state"
+      Repo.commit_new_head ~sync:Cover_state.sync "Update cover state"
         { switch_state.current_timestamp with head = Some cover_state }
   | _ ->
     (* Start over with a fresh [current_timestamp] directory and fresh cover
@@ -485,15 +485,15 @@ let recover_current_timestamp
     (* This initializes a fresh [current_timestamp] directory; it contains
        no data at this point (i.e. [current_timestamp.head = None]) *)
     let current_timestamp =
-      Versioned.load_and_clean
-        ~repo:switch_state.current_timestamp.git_repo
+      Repo.load_and_clean
+        ~path:switch_state.current_timestamp.path
         ~load:(fun ~dir:_ -> assert false (* there is no data to load *)) in
     (* Add some data to the directory (the initial cover state for our
        packages selection). *)
     let cover_state = Cover_state.create
-        ~dir:switch_state.current_timestamp.git_repo
+        ~dir:switch_state.current_timestamp.path
         ~timestamp:repo_timestamp in
-    Versioned.commit_new_head ~sync:Cover_state.sync "Initial cover state"
+    Repo.commit_new_head ~sync:Cover_state.sync "Initial cover state"
       { current_timestamp with head = Some cover_state }
 
 
@@ -503,7 +503,7 @@ let build
     ~(universe : universe)
     ~(universe_cycles : PkgSet.t list list)
     ~(to_install: PkgSet.t)
-    (initial_timestamp : Cover_state.t Versioned.t)
+    (initial_timestamp : Cover_state.t Repo.t)
   =
   (* Build loop:
      - compute the next element of the cover (if needed);
@@ -524,7 +524,7 @@ let build
   let rec start_build
       ~(universe : universe)
       ~(to_install: PkgSet.t)
-      (current_timestamp : Cover_state.t Versioned.t)
+      (current_timestamp : Cover_state.t Repo.t)
     =
     let cover_state = CCOpt.get_exn current_timestamp.head in
     match cover_state.cur_plan.data with
@@ -533,7 +533,7 @@ let build
     | Some cover_elt ->
        build_cover_element ~universe ~to_install current_timestamp cover_state cover_elt
 
-  and finish_build (current_timestamp : Cover_state.t Versioned.t) =
+  and finish_build (current_timestamp : Cover_state.t Repo.t) =
     let cover_state = CCOpt.get_exn current_timestamp.head in
     log "Finished building all packages of the selection \
          (%d uninstallable packages)"
@@ -543,7 +543,7 @@ let build
   and build_next_cover_element
     ~(universe : universe)
     ~(to_install: PkgSet.t)
-    (current_timestamp : Cover_state.t Versioned.t)
+    (current_timestamp : Cover_state.t Repo.t)
     (cover_state : Cover_state.t)
   =
     if PkgSet.is_empty to_install then
@@ -555,7 +555,7 @@ let build
           ~make_request:(Lib.make_request_maxsat ~cycles:universe_cycles)
           ~universe ~to_install in
       let change_cover_state msg cover_state =
-        Versioned.commit_new_head ~sync:Cover_state.sync msg
+        Repo.commit_new_head ~sync:Cover_state.sync msg
           { current_timestamp with head = Some cover_state } in
       if PkgSet.is_empty elt.useful then begin
         assert (PkgSet.equal to_install remaining);
@@ -578,7 +578,7 @@ let build
   and build_cover_element
     ~(universe : universe)
     ~(to_install: PkgSet.t)
-    (current_timestamp : Cover_state.t Versioned.t)
+    (current_timestamp : Cover_state.t Repo.t)
     (cover_state : Cover_state.t)
     (plan : Cover_elt_plan.t)
     =
@@ -610,7 +610,7 @@ let build
       |> Cover_state.archive_cur_elt
     in
     let current_timestamp =
-      Versioned.commit_new_head ~sync:Cover_state.sync
+      Repo.commit_new_head ~sync:Cover_state.sync
         "Built the current cover element"
         { current_timestamp with head = Some cover_state } in
     log "Finished building the current cover element";
@@ -693,7 +693,7 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   log "User package selection includes %d packages"
     (PkgSet.cardinal selection_packages);
 
-  let current_timestamp : Cover_state.t Versioned.t =
+  let current_timestamp : Cover_state.t Repo.t =
     recover_current_timestamp ~switch_state ~repo_url ~selection:selection_packages in
 
   let universe, to_install =
@@ -704,7 +704,7 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
          PkgSet.diff selection_packages (Cover_state.resolved_packages cover_state)
   in
 
-  let _current_timestamp : Cover_state.t Versioned.t =
+  let _current_timestamp : Cover_state.t Repo.t =
     build ~switch_name ~compiler ~universe ~universe_cycles ~to_install
       current_timestamp
   in
