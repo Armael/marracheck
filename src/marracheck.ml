@@ -452,49 +452,52 @@ let recover_cover_state ~(selection : PkgSet.t) (cover_state : Cover_state.t) =
       Cover_state.archive_cur_elt cover_state, true
     end
 
-let recover_current_timestamp
-    ~(switch_state: Switch_state.t)
+let recover_switch_state
     ~(repo_url: OpamUrl.t)
     ~(selection: PkgSet.t)
+    (switch_state: Switch_state.t)
   =
   let repo_timestamp = get_repo_timestamp repo_url in
-  match switch_state.current_timestamp.head with
-  | Some cover_state when repo_timestamp = cover_state.timestamp.data ->
-    log "Found an existing cover state for the current timestamp";
-    let cover_state, has_changed =
-      recover_cover_state ~selection cover_state in
-    if not has_changed then
-      (* Avoid polluting the git history with identity commits *)
-      switch_state.current_timestamp
-    else
-      Repo.commit_new_head ~sync:Cover_state.sync "Update cover state"
-        { switch_state.current_timestamp with head = Some cover_state }
-  | _ ->
-    (* Start over with a fresh [current_timestamp] directory and fresh cover
-       state. *)
-    if switch_state.current_timestamp.head <> None then begin
-      log "Existing cover state is for an old repo timestamp";
-      (* There is an existing cover_state, but its timestamp does not match
-         the one of the repository. Retire the current_timestamp directory
-         before creating a new one *)
-      retire_current_timestamp
-        ~current_timestamp:switch_state.current_timestamp
-        ~past_timestamps:switch_state.past_timestamps;
-    end;
-    log "Initialize a fresh cover state";
-    (* This initializes a fresh [current_timestamp] directory; it contains
-       no data at this point (i.e. [current_timestamp.head = None]) *)
-    let current_timestamp =
-      Repo.load_and_clean
-        ~path:switch_state.current_timestamp.path
-        ~load:(fun ~dir:_ -> assert false (* there is no data to load *)) in
-    (* Add some data to the directory (the initial cover state for our
-       packages selection). *)
-    let cover_state = Cover_state.create
-        ~dir:switch_state.current_timestamp.path
-        ~timestamp:repo_timestamp in
-    Repo.commit_new_head ~sync:Cover_state.sync "Initial cover state"
-      { current_timestamp with head = Some cover_state }
+  let current_timestamp =
+    match switch_state.current_timestamp.head with
+    | Some cover_state when repo_timestamp = cover_state.timestamp.data ->
+      log "Found an existing cover state for the current timestamp";
+      let cover_state, has_changed =
+        recover_cover_state ~selection cover_state in
+      if not has_changed then
+        (* Avoid polluting the git history with identity commits *)
+        switch_state.current_timestamp
+      else
+        Repo.commit_new_head ~sync:Cover_state.sync "Update cover state"
+          { switch_state.current_timestamp with head = Some cover_state }
+    | _ ->
+      (* Start over with a fresh [current_timestamp] directory and fresh cover
+         state. *)
+      if switch_state.current_timestamp.head <> None then begin
+        log "Existing cover state is for an old repo timestamp";
+        (* There is an existing cover_state, but its timestamp does not match
+           the one of the repository. Retire the current_timestamp directory
+           before creating a new one *)
+        retire_current_timestamp
+          ~current_timestamp:switch_state.current_timestamp
+          ~past_timestamps:switch_state.past_timestamps;
+      end;
+      log "Initialize a fresh cover state";
+      (* This initializes a fresh [current_timestamp] directory; it contains
+         no data at this point (i.e. [current_timestamp.head = None]) *)
+      let current_timestamp =
+        Repo.load_and_clean
+          ~path:switch_state.current_timestamp.path
+          ~load:(fun ~dir:_ -> assert false (* there is no data to load *)) in
+      (* Add some data to the directory (the initial cover state for our
+         packages selection). *)
+      let cover_state = Cover_state.create
+          ~dir:switch_state.current_timestamp.path
+          ~timestamp:repo_timestamp in
+      Repo.commit_new_head ~sync:Cover_state.sync "Initial cover state"
+        { current_timestamp with head = Some cover_state }
+  in
+  { switch_state with current_timestamp }
 
 
 let build
@@ -693,11 +696,11 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   log "User package selection includes %d packages"
     (PkgSet.cardinal selection_packages);
 
-  let current_timestamp : Cover_state.t Repo.t =
-    recover_current_timestamp ~switch_state ~repo_url ~selection:selection_packages in
+  let switch_state : Switch_state.t =
+    recover_switch_state ~repo_url ~selection:selection_packages switch_state in
 
   let universe, to_install =
-    match current_timestamp.head with
+    match switch_state.current_timestamp.head with
       | None -> universe, selection_packages
       | Some cover_state ->
          remove_from_universe universe (Cover_state.broken_packages cover_state),
@@ -706,7 +709,7 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
 
   let _current_timestamp : Cover_state.t Repo.t =
     build ~switch_name ~compiler ~universe ~universe_cycles ~to_install
-      current_timestamp
+      switch_state.current_timestamp
   in
   log "Done";
   ()
