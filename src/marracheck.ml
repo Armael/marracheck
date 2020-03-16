@@ -14,6 +14,17 @@ type package_selection = [
   | `Packages of package list
 ]
 
+(* neutralize the environment variable that make our life miserable *)
+let cleanup_system_environment () =
+  [
+    "OPAMSWITCH";
+    "OPAM_SWITCH_PREFIX";
+  ]
+  |> List.iter (fun var -> Unix.putenv var "")
+
+let () =
+  cleanup_system_environment ()
+
 let init_opam_root ~workdir ~opamroot ~repo_url =
   let init_config = OpamInitDefaults.init_config ~sandboxing:true () in
   (* Setup the hooks for the binary cache script *)
@@ -642,7 +653,6 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   in
 
   (* Setup the opam-related global state *)
-
   OpamClientConfig.opam_init
     ~best_effort:false
     ~root_dir:opamroot
