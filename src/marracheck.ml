@@ -284,21 +284,15 @@ let process_solution_result (result: solution_result) =
     failures actions_result.actions_errors,
     aborted actions_result.actions_aborted
 
-let retire_current_timestamp
-    ~(current_timestamp : Cover_state.t Repo.t)
-    ~(past_timestamps : dirname)
+let retire_cover_state
+    ~(switch_state : Switch_state.t)
+    cover_state
   =
-  match current_timestamp.Repo.head with
-  | None ->
-    (* We could probably also also do nothing ... *)
-    assert false
-  | Some cover_state ->
-    let timestamp_s = cover_state.Cover_state.timestamp.data in
-    let cur_basename =
-      File.Base.to_string (File.basename_dir current_timestamp.path) in
-    mv
-      current_timestamp.path
-      File.Op.(past_timestamps / (cur_basename ^ "_" ^ timestamp_s))
+  let repo_path = switch_state.cover_state_repo.path in
+  let past_timestamps = switch_state.past_timestamps in
+  let timestamp_s = cover_state.Cover_state.timestamp.data in
+  let cur_basename = File.Base.to_string (File.basename_dir repo_path) in
+  mv repo_path File.Op.(past_timestamps / (cur_basename ^ "_" ^ timestamp_s))
 
 (* Recover or initialize an opam_root with an up-to-date repository *)
 let recover_opam_root ~workdir ~repo_url opamroot =
@@ -458,46 +452,45 @@ let recover_switch_state
     (switch_state: Switch_state.t)
   =
   let repo_timestamp = get_repo_timestamp repo_url in
-  let current_timestamp =
-    match switch_state.current_timestamp.head with
+  let cover_state_repo =
+    match switch_state.cover_state_repo.head with
     | Some cover_state when repo_timestamp = cover_state.timestamp.data ->
       log "Found an existing cover state for the current timestamp";
       let cover_state, has_changed =
         recover_cover_state ~selection cover_state in
       if not has_changed then
         (* Avoid polluting the git history with identity commits *)
-        switch_state.current_timestamp
+        switch_state.cover_state_repo
       else
         Repo.commit_new_head ~sync:Cover_state.sync "Update cover state"
-          { switch_state.current_timestamp with head = Some cover_state }
+          { switch_state.cover_state_repo with head = Some cover_state }
     | _ ->
-      (* Start over with a fresh [current_timestamp] directory and fresh cover
-         state. *)
-      if switch_state.current_timestamp.head <> None then begin
-        log "Existing cover state is for an old repo timestamp";
-        (* There is an existing cover_state, but its timestamp does not match
-           the one of the repository. Retire the current_timestamp directory
-           before creating a new one *)
-        retire_current_timestamp
-          ~current_timestamp:switch_state.current_timestamp
-          ~past_timestamps:switch_state.past_timestamps;
+      (* Start over with a fresh cover state for the current timestamp *)
+      begin match switch_state.cover_state_repo.head with
+        | None -> ()
+        | Some cover_state ->
+          log "Existing cover state is for an old repo timestamp";
+          (* There is an existing cover_state, but its timestamp does not match
+             the one of the repository. Retire the cover_state
+             before creating a new one *)
+          retire_cover_state switch_state cover_state;
       end;
       log "Initialize a fresh cover state";
-      (* This initializes a fresh [current_timestamp] directory; it contains
-         no data at this point (i.e. [current_timestamp.head = None]) *)
-      let current_timestamp =
+      (* This initializes a fresh cover_state repository; it contains
+         no data at this point (i.e. [cover_state_repo.head = None]) *)
+      let cover_state_repo =
         Repo.load_and_clean
-          ~path:switch_state.current_timestamp.path
+          ~path:switch_state.cover_state_repo.path
           ~load:(fun ~dir:_ -> assert false (* there is no data to load *)) in
       (* Add some data to the directory (the initial cover state for our
          packages selection). *)
       let cover_state = Cover_state.create
-          ~dir:switch_state.current_timestamp.path
+          ~dir:switch_state.cover_state_repo.path
           ~timestamp:repo_timestamp in
       Repo.commit_new_head ~sync:Cover_state.sync "Initial cover state"
-        { current_timestamp with head = Some cover_state }
+        { cover_state_repo with head = Some cover_state }
   in
-  { switch_state with current_timestamp }
+  { switch_state with cover_state_repo }
 
 
 let build
@@ -515,7 +508,7 @@ let build
 
      Loop invariant:
      - everything other than the opam switch and the cover state stays the
-       same (in particular, the current timestamp stays the same)
+       same (in particular, the opam-repository timestamp stays the same)
      - the opam switch can contain some already installed packages
      - we maintain and update a valid cover_state which contains the current
        element, the old elements, the report of built packages
@@ -527,61 +520,62 @@ let build
   let rec start_build
       ~(universe : universe)
       ~(to_install: PkgSet.t)
-      (current_timestamp : Cover_state.t Repo.t)
+      (cover_state_repo : Cover_state.t Repo.t)
     =
-    let cover_state = CCOpt.get_exn current_timestamp.head in
+    let cover_state = CCOpt.get_exn cover_state_repo.head in
     match cover_state.cur_plan.data with
     | None ->
-       build_next_cover_element ~universe ~to_install current_timestamp cover_state
+       build_next_cover_element ~universe ~to_install cover_state_repo cover_state
     | Some cover_elt ->
-       build_cover_element ~universe ~to_install current_timestamp cover_state cover_elt
+       build_cover_element ~universe ~to_install cover_state_repo cover_state cover_elt
 
-  and finish_build (current_timestamp : Cover_state.t Repo.t) =
-    let cover_state = CCOpt.get_exn current_timestamp.head in
+  and finish_build (cover_state_repo : Cover_state.t Repo.t) (cover_state : Cover_state.t) =
     log "Finished building all packages of the selection \
          (%d uninstallable packages)"
       (PkgSet.cardinal cover_state.uninst.data);
-    current_timestamp
+    cover_state_repo
 
   and build_next_cover_element
     ~(universe : universe)
     ~(to_install: PkgSet.t)
-    (current_timestamp : Cover_state.t Repo.t)
+    (cover_state_repo : Cover_state.t Repo.t)
     (cover_state : Cover_state.t)
   =
     if PkgSet.is_empty to_install then
-      finish_build current_timestamp
+      finish_build cover_state_repo cover_state
     else begin
       log "Computing the next element...";
       let elt, remaining =
         Cover_elt_plan.compute
           ~make_request:(Lib.make_request_maxsat ~cycles:universe_cycles)
           ~universe ~to_install in
-      let change_cover_state msg cover_state =
+      let commit_cover_state msg cover_state =
         Repo.commit_new_head ~sync:Cover_state.sync msg
-          { current_timestamp with head = Some cover_state } in
+          { cover_state_repo with head = Some cover_state } in
       if PkgSet.is_empty elt.useful then begin
         assert (PkgSet.equal to_install remaining);
-        { cover_state with
-          uninst = { cover_state.uninst with data = remaining };
-        }
-        |> change_cover_state "No new element; build loop done"
-        |> finish_build
+        let cover_state =
+          { cover_state with
+            uninst = { cover_state.uninst with data = remaining };
+          } in
+        let cover_state_repo =
+          commit_cover_state "No new element; build loop done" cover_state in
+        finish_build cover_state_repo cover_state
       end else begin
         let cover_state =
           { cover_state with
             cur_plan = { cover_state.cur_plan with data = Some elt };
           } in
-        let current_timestamp =
-          change_cover_state "New element computed" cover_state in
-        build_cover_element ~universe ~to_install current_timestamp cover_state elt
+        let cover_state_repo =
+          commit_cover_state "New element computed" cover_state in
+        build_cover_element ~universe ~to_install cover_state_repo cover_state elt
       end
     end
 
   and build_cover_element
     ~(universe : universe)
     ~(to_install: PkgSet.t)
-    (current_timestamp : Cover_state.t Repo.t)
+    (cover_state_repo : Cover_state.t Repo.t)
     (cover_state : Cover_state.t)
     (plan : Cover_elt_plan.t)
     =
@@ -612,10 +606,10 @@ let build
       |> Cover_state.add_items_to_report pkgs_aborted
       |> Cover_state.archive_cur_elt
     in
-    let current_timestamp =
+    let cover_state_repo =
       Repo.commit_new_head ~sync:Cover_state.sync
         "Built the current cover element"
-        { current_timestamp with head = Some cover_state } in
+        { cover_state_repo with head = Some cover_state } in
     log "Finished building the current cover element";
 
     let universe, to_install =
@@ -624,7 +618,7 @@ let build
       remove_from_universe universe errors,
       PkgSet.Op.(to_install -- successes -- errors)
     in
-    build_next_cover_element ~universe ~to_install current_timestamp cover_state
+    build_next_cover_element ~universe ~to_install cover_state_repo cover_state
 
   in
   start_build ~universe ~to_install initial_timestamp
@@ -700,16 +694,16 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
     recover_switch_state ~repo_url ~selection:selection_packages switch_state in
 
   let universe, to_install =
-    match switch_state.current_timestamp.head with
+    match switch_state.cover_state_repo.head with
       | None -> universe, selection_packages
       | Some cover_state ->
          remove_from_universe universe (Cover_state.broken_packages cover_state),
          PkgSet.diff selection_packages (Cover_state.resolved_packages cover_state)
   in
 
-  let _current_timestamp : Cover_state.t Repo.t =
+  let _cover_state_repo : Cover_state.t Repo.t =
     build ~switch_name ~compiler ~universe ~universe_cycles ~to_install
-      switch_state.current_timestamp
+      switch_state.cover_state_repo
   in
   log "Done";
   ()

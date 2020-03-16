@@ -10,10 +10,10 @@ let opamroot_path = "opamroot"
 
 (* Relative to a switch_state directory *)
 let log_path = "log"
-let current_timestamp_path = "current_timestamp.git"
+let cover_state_repo_path = "cover_state.git"
 let past_timestamps_path = "past_timestamps"
 
-(* Relative to a current_timestamp.git directory *)
+(* Relative to a cover_state.git directory *)
 let timestamp_path = "timestamp"
 let past_elts_path = "past_elts.json"
 let cur_plan_path = "cur_plan.json"
@@ -397,7 +397,7 @@ module Switch_state = struct
   type t = {
     path : dirname;
     log : filename;
-    current_timestamp : Cover_state.t Repo.t;
+    cover_state_repo : Cover_state.t Repo.t;
     past_timestamps : dirname;
   }
 end
@@ -417,16 +417,16 @@ module Work_state = struct
       let switch_dir =
         Op.(workdir / switches_path / OpamPackage.to_string compiler) in
       mkdir switch_dir;
-      mkdir Op.(switch_dir / current_timestamp_path);
+      mkdir Op.(switch_dir / cover_state_repo_path);
       mkdir Op.(switch_dir / past_timestamps_path);
-      let current_timestamp =
+      let cover_state_repo =
         Repo.load_and_clean
-          ~path:Op.(switch_dir / current_timestamp_path)
+          ~path:Op.(switch_dir / cover_state_repo_path)
           ~load:Cover_state.load
       in
       { path = switch_dir;
         log = Op.(switch_dir // log_path);
-        current_timestamp;
+        cover_state_repo;
         past_timestamps = Op.(switch_dir / past_timestamps_path); }
 
     let sync ~workdir state =
