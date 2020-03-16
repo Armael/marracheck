@@ -247,42 +247,49 @@ let build_log_of_exn exn =
   | e ->
     ["======= Exception ======="; Printexc.to_string e]
 
-let process_solution_result (result: solution_result) =
-  let successes = CCList.filter_map (function
-    | `Install p ->
-      (* FIXME: how do we get the build logs? *)
-      Some (p, Success { log = ["TODO"]; changes = Changes })
-    | `Build _ | `Fetch _ ->
-      (* Build and Fetch are dependencies of Install, so they must have succeded
-         if Install did succeed *)
-      None
-    | `Change _ | `Reinstall _ | `Remove _ -> assert false
-  ) in
-  let failures = CCList.map (fun (action, exn) ->
-    match action with
-    | `Fetch p ->
-      p, Error { log = build_log_of_exn exn; cause = `Fetch }
-    | `Build p ->
-      p, Error { log = build_log_of_exn exn; cause = `Build }
-    | `Install p ->
-      p, Error { log = build_log_of_exn exn; cause = `Install }
-    | `Change _ | `Reinstall _ | `Remove _ -> assert false
-  ) in
-  let aborted l = CCList.map (function
-    | `Build p | `Install p | `Fetch p ->
-      p, Aborted { deps = PkgSet.empty (* TODO *) }
-    | `Change _ | `Reinstall _ | `Remove _ -> assert false
-  ) l
-  |> CCList.sort_uniq ~cmp:(fun (p,_) (q,_) -> OpamPackage.compare p q)
-  in
-  match result with
-  | Aborted -> fatal "Aborted build"
-  | Nothing_to_do -> assert false
-  | OK actions -> successes actions, [], []
-  | Partial_error actions_result ->
-    successes actions_result.actions_successes,
-    failures actions_result.actions_errors,
-    aborted actions_result.actions_aborted
+let process_package_result
+    (action : package action)
+    (action_result : (PkgSet.t * PkgSet.t, OpamSolver.Action.Set.t) action_result)
+  : Cover_state.report_item option
+  =
+  let error exn cause = Error { log = build_log_of_exn exn; cause } in
+  match action with
+  | (`Change _ | `Reinstall _ | `Remove _) ->
+    assert false
+  | (`Build package | `Fetch package) as action ->
+    (* Build and Fetch are dependencies of Install.
+
+       If they fail, Install will be aborted, we record them as failures.
+       If they succeed, we don't know whether the package will succeed,
+       so do not record a success and wait for the Install action.
+
+       We record all aborts, potentially several for each package.
+    *)
+    let report = match action_result with
+      | `Aborted deps ->
+        Some (Aborted { deps })
+      | `Successful _ ->
+        None
+      | `Exception exn ->
+        let cause = match action with
+          | `Build _ -> `Build
+          | `Fetch _ -> `Fetch
+        in
+        Some (error exn cause)
+    in report |> Option.map (fun report -> package, report)
+  | `Install package ->
+    let report = match action_result with
+      | `Aborted deps ->
+        Aborted { deps }
+      | `Exception exn ->
+        error exn `Install
+      | `Successful (installed, _removed) ->
+        let changes = (* FIXME *)
+          ignore installed; Changes in
+        let log = (* FIXME *)
+          ["TODO"] in
+        Success { log; changes }
+    in Some (package, report)
 
 let retire_cover_state
     ~(switch_state : Switch_state.t)
@@ -443,7 +450,8 @@ let recover_cover_state ~(selection : PkgSet.t) (cover_state : Cover_state.t) =
          been built partially (that's fine as long as we remember to
          consider cover elements only as the output of the solver for
          co-installable packages, not as the build log). *)
-      Cover_state.archive_cur_elt cover_state, true
+      let cover_elt, cover_state = Cover_state.archive_cur_elt cover_state in
+      cover_state, true
     end
 
 let recover_switch_state
@@ -584,7 +592,21 @@ let build
     recover_opam_switch_for_plan ~switch_name ~universe ~compiler plan;
 
     (* The cover element can now be built in the current opam switch *)
-    let pkgs_success, pkgs_error, pkgs_aborted =
+    let cover_state = ref cover_state in
+    let update_cover_state package_action action_result =
+      match process_package_result package_action action_result with
+      | None -> ()
+      | Some report_item ->
+        cover_state := Cover_state.add_item_to_report report_item !cover_state;
+        let repo =
+          Repo.commit_new_head ~sync:Cover_state.sync
+            (Printf.sprintf "New report for package %s"
+               (OpamPackage.to_string (fst report_item)))
+            { cover_state_repo with head = Some !cover_state } in
+        cover_state := CCOpt.get_exn repo.head
+    in
+
+    let cover_state =
       OpamGlobalState.with_ `Lock_none @@ fun gs ->
       OpamSwitchState.with_ `Lock_write gs @@ fun sw ->
       let (sw, res) =
@@ -592,20 +614,17 @@ let build
           ~ask:false
           ~requested:OpamPackage.Name.Set.empty
           ~assume_built:false
+          ~report_action_result:update_cover_state
           plan.Cover_elt_plan.solution
       in
+      ignore res; (* we updated the cover state report incrementally *)
       OpamSwitchState.drop sw;
-      process_solution_result res
+      !cover_state
     in
 
     (* Update the cover state *)
-    let cover_state =
-      cover_state
-      |> Cover_state.add_items_to_report pkgs_success
-      |> Cover_state.add_items_to_report pkgs_error
-      |> Cover_state.add_items_to_report pkgs_aborted
-      |> Cover_state.archive_cur_elt
-    in
+    let cover_elt, cover_state = Cover_state.archive_cur_elt cover_state in
+
     let cover_state_repo =
       Repo.commit_new_head ~sync:Cover_state.sync
         "Built the current cover element"
@@ -613,8 +632,15 @@ let build
     log "Finished building the current cover element";
 
     let universe, to_install =
-      let successes = PkgSet.of_list (List.map fst pkgs_success) in
-      let errors = PkgSet.of_list (List.map fst pkgs_error) in
+      let successes, errors =
+        let (_plan, report) = cover_elt in
+        PkgMap.fold (fun package result (suc, err) ->
+          match result with
+          | Success _ -> (PkgSet.add package suc, err)
+          | Error _ -> (suc, PkgSet.add package err)
+          | Aborted _ -> (suc, err)
+        ) report (PkgSet.empty, PkgSet.empty)
+      in
       remove_from_universe universe errors,
       PkgSet.Op.(to_install -- successes -- errors)
     in
