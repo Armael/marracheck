@@ -2,6 +2,7 @@ open OpamTypes
 
 module PkgSet = OpamPackage.Set
 module PkgMap = OpamPackage.Map
+module Action = OpamSolver.Action
 
 module Json = Ezjsonm
 

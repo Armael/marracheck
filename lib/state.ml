@@ -157,7 +157,7 @@ type error_cause = [ `Fetch | `Build | `Install ]
 type package_report =
   | Success of { log : build_log; changes : changes }
   | Error of { log : build_log; cause : error_cause }
-  | Aborted of { deps : PkgSet.t }
+  | Aborted of { deps : Action.Set.t }
   (* An [Aborted] status means that the package could not be built
      because _for all possible ways of building the package_
      at least one of its dependencies fails to build. *)
@@ -178,7 +178,7 @@ let package_report_of_json (j: Json.value): package_report =
       in
       Error { log = Json.get_list Json.get_string (List.assoc "log" l); cause }
     | "aborted" ->
-      let deps = match PkgSet.of_json (List.assoc "deps" l) with
+      let deps = match Action.Set.of_json (List.assoc "deps" l) with
         | Some deps -> deps
         | None -> raise Not_found
       in
@@ -202,7 +202,7 @@ let package_report_to_json = function
          ("cause", `String cause_s) ]
   | Aborted { deps } ->
     `O [ ("status", `String "aborted");
-         ("deps", PkgSet.to_json deps) ]
+         ("deps", Action.Set.to_json deps) ]
 
 module Cover = struct
   type elt_report = package_report OpamPackage.Map.t
@@ -320,12 +320,13 @@ module Cover_state = struct
         PkgMap.add package package_report archive
       ) PkgMap.empty report
 
-  let archive_cur_elt (st: t): t =
+  let archive_cur_elt (st: t): Cover.elt * t =
     match st.cur_plan.data with
-    | None -> st
+    | None -> assert false
     | Some plan ->
       let report = archive_report (SerializedLog.items st.cur_report) in
       let elt = (plan, report) in
+      elt,
       { st with
         past_elts = { st.past_elts with data = elt :: st.past_elts.data };
         cur_plan = { data = None; path = st.cur_plan.path };
