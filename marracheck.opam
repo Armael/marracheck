@@ -22,8 +22,10 @@ depends: [
   "containers"
   "cmdliner"
   "ezjsonm" {>= "1.1.0"}
+  "yojson"
   "lwt"
   "z3" {>= "4.8.4"}
+  "opam-file-format" {= "2.1.0"}
 #
 # Dependencies for the vendored opam libs
 # (see the .opam files in the opam git submodule)
