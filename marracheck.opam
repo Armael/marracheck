@@ -16,25 +16,24 @@ build: [
   ["dune" "build" "-p" name "-j" jobs]
 ]
 depends: [
-  "dune"     {build >= "1.0.0"}
-  "opam-state" {>= "2.0.0"}
-  "opam-solver" {>= "2.0.0"}
-  "opam-client" {>= "2.0.0"}
+  "dune" {>= "1.6"}
   "bos"
   "oseq"
   "containers"
   "cmdliner"
   "ezjsonm" {>= "1.1.0"}
-  "z3"
   "lwt"
-]
-pin-depends: [
-  ["opam-client.2.0.0" "git+https://github.com/Armael/opam#marracheck"]
-  ["opam-core.2.0.0" "git+https://github.com/Armael/opam#marracheck"]
-  ["opam-format.2.0.0" "git+https://github.com/Armael/opam#marracheck"]
-  ["opam-repository.2.0.0" "git+https://github.com/Armael/opam#marracheck"]
-  ["opam-solver.2.0.0" "git+https://github.com/Armael/opam#marracheck"]
-  ["opam-state.2.0.0" "git+https://github.com/Armael/opam#marracheck"]
+  "z3" {>= "4.8.4"}
+#
+# Dependencies for the vendored opam libs
+# (see the .opam files in the opam git submodule)
+  "re" {>= "1.9.0"}
+  "cmdliner" {>= "0.9.8"}
+  "ocamlgraph"
+  "cppo"
+  "mccs" {>= "1.1+9"}
+  "dose3" {>= "5"}
+  "cudf" {>= "0.7"}
 ]
 synopsis: "Gotta check them all!"
 description: """
