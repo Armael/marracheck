@@ -1,5 +1,6 @@
-(executables
-  (names marracheck)
+(executable
+  (public_name marracheck)
+  (name marracheck)
   (modules marracheck)
   (libraries marracheck_lib ezjsonm containers cmdliner))
 
