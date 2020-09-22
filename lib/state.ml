@@ -213,11 +213,11 @@ module Cover = struct
     try
       let l = Json.get_dict j in
       let get_opt = function Some x -> x | None -> raise Not_found in
-      Lib.{ solution =
-              OpamSolver.solution_of_json (List.assoc "solution" l)
-              |> get_opt;
-            useful =
-              PkgSet.of_json (List.assoc "useful" l) |> get_opt; }
+      { solution =
+          OpamSolver.solution_of_json (List.assoc "solution" l)
+          |> get_opt;
+        useful =
+          PkgSet.of_json (List.assoc "useful" l) |> get_opt; }
     with Not_found -> Json.parse_error j "invalid cover element"
 
   let cover_elt_plan_to_json plan =

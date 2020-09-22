@@ -224,5 +224,5 @@ let make_request_maxsat ~cycles ~universe ~to_install =
     try
       let s = OpamCudf.atomic_actions ~simple_universe ~complete_universe actions in
       (Obj.magic s : OpamSolver.solution) (* XXXX *)
-    with OpamCudf.Cyclic_actions cycles ->
+    with OpamCudf.Cyclic_actions _cycles ->
       assert false

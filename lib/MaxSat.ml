@@ -200,7 +200,6 @@ let spawn_lwt ~timeout (cmd: string) =
       Lwt.return (ret_code, stdout)))
 
 let call_solver ~time_budget pkg_of_id hard_clauses soft_clauses max_id =
-  let open Lwt.Infix in
   let filename, cout = Filename.open_temp_file "marracheck-maxsat" "" in
 
   log "MaxSat instance in: %s" filename;
@@ -281,6 +280,7 @@ let inner_call ~time_budget ~cycles (preamble, universe, request as cudf) =
 
 (* In order to satisfy the opam solver API *)
 let call ~criteria ?timeout cudf =
+  ignore criteria;
   let time_budget = CCOpt.get_lazy (fun () ->
     log "MaxSat needs a time budget";
     raise Exit

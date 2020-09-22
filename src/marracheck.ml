@@ -450,7 +450,7 @@ let recover_cover_state ~(selection : PkgSet.t) (cover_state : Cover_state.t) =
          been built partially (that's fine as long as we remember to
          consider cover elements only as the output of the solver for
          co-installable packages, not as the build log). *)
-      let cover_elt, cover_state = Cover_state.archive_cur_elt cover_state in
+      let _cover_elt, cover_state = Cover_state.archive_cur_elt cover_state in
       cover_state, true
     end
 
@@ -481,7 +481,7 @@ let recover_switch_state
           (* There is an existing cover_state, but its timestamp does not match
              the one of the repository. Retire the cover_state
              before creating a new one *)
-          retire_cover_state switch_state cover_state;
+          retire_cover_state ~switch_state cover_state;
       end;
       log "Initialize a fresh cover state";
       (* This initializes a fresh cover_state repository; it contains
