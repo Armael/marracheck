@@ -15,21 +15,22 @@ let get_universe switch =
 
 let card = OpamPackage.Set.cardinal
 
-let compute_cover_batch ~cycles ~universe ~packages =
-  let rec loop elts to_install =
+(* elts_bound = -1 || elts_bound > 0 *)
+let compute_cover_batch ~cycles ~universe ~packages ~elts_bound =
+  let rec loop elts to_install elts_bound =
     let elt, remaining =
       Cover_elt_plan.compute
         ~make_request:(make_request_maxsat ~cycles)
         ~universe ~to_install
     in
-    if OpamPackage.Set.is_empty elt.Cover_elt_plan.useful then begin
+    if OpamPackage.Set.is_empty elt.Cover_elt_plan.useful || elts_bound = 1 then begin
       (* We are done, the remaining packages are uninstallable *)
       assert (OpamPackage.Set.equal to_install remaining);
       List.rev elts, remaining
     end else
-      loop (elt :: elts) remaining
+      loop (elt :: elts) remaining (elts_bound-1)
   in
-  loop [] packages
+  loop [] packages elts_bound
 
 (****************************)
 
@@ -39,12 +40,26 @@ let json_of_cover (elts, uninst) =
     "uninst", OpamPackage.Set.to_json uninst;
    ]
 
+let out_file = ref None
+let elts_bound = ref (-1)
+
 let () =
+  let usage = Printf.sprintf "usage: %s [--max-elts n] out_file" Sys.argv.(0) in
+  Arg.parse [
+    "--max-elts", Set_int elts_bound, "Maximum number of elements to compute (default: no bound)";
+  ] (fun s -> match !out_file with
+              | None -> out_file := Some s
+              | Some _ -> raise Exit)
+  usage;
   let out_file =
-    match Sys.argv |> Array.to_list |> List.tl with
-    | [out_file] -> out_file
-    | _ -> Printf.eprintf "usage: %s out_file\n" Sys.argv.(0); exit 1
+    match !out_file with
+    | None -> Printf.eprintf "%s\n" usage; exit 1
+    | Some s -> s
   in
+  if !elts_bound = 0 then (
+    Printf.eprintf "Nothing to do.\n"; exit 1
+  );
+
   OpamClientConfig.opam_init ();
   let gs = OpamGlobalState.load `Lock_read in
   OpamSwitchState.with_ `Lock_read gs (fun switch ->
@@ -64,7 +79,7 @@ let () =
     let universe_cycles = compute_universe_cycles u in
     let (elts, uninst) =
       compute_cover_batch ~cycles:universe_cycles ~universe:u
-        ~packages:all_packages
+        ~packages:all_packages ~elts_bound:!elts_bound
     in
 
     CCIO.with_out out_file (fun cout ->
