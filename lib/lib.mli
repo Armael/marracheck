@@ -1,5 +1,3 @@
-(* val universe_exclude_cycles : OpamTypes.universe -> OpamTypes.universe *)
-
 module Cover_elt_plan : sig
   type t = {
     solution: OpamSolver.solution;
@@ -19,9 +17,11 @@ module Cover_elt_plan : sig
     universe:OpamTypes.universe ->
     to_install:OpamPackage.Set.t ->
     t * OpamPackage.Set.t
+
+  val to_json : t OpamJson.encoder
 end
 
-val dump_file : string
+val compute_universe_cycles : OpamTypes.universe -> OpamPackage.Set.t list list
 
 val make_request_maxsat :
   cycles:OpamPackage.Set.t list list ->

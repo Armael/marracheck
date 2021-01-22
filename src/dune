@@ -7,7 +7,7 @@
 (executable
   (name compute_cover)
   (modules compute_cover)
-  (libraries marracheck_lib marracheck_lib_computer_cover ezjsonm containers cmdliner))
+  (libraries marracheck_lib ezjsonm containers cmdliner))
 
 (executable
   (name opam_bin_cache)

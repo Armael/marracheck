@@ -132,12 +132,6 @@ let remove_from_universe (u: universe) (to_remove : PkgSet.t): universe =
     u_available = PkgSet.diff u.u_available to_remove;
   }
 
-let compute_universe_cycles (u: universe): PkgSet.t list list =
-  let pkgs, cycles = OpamAdminCheck.cycle_check u in
-  List.map (fun cycle ->
-    List.map (fun f -> OpamFormula.packages pkgs f) cycle
-  ) cycles
-
 (* Assumes a clean universe *)
 let compute_package_selection (u: universe) (compiler: package)
   : package_selection -> PkgSet.t
@@ -709,7 +703,7 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   let switch_state = work_state.view in
   let universe = switch_universe () |> prepare_universe in
   log "Computing cycles in the packages universe...";
-  let universe_cycles = compute_universe_cycles universe in
+  let universe_cycles = Lib.compute_universe_cycles universe in
   log "Done";
 
   let selection_packages = compute_selection_packages universe in

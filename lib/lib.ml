@@ -26,37 +26,11 @@ concernant les fichiers changes:
 
 let card = OpamPackage.Set.cardinal
 
-(* Explicitly mark cyclic solutions as conflicts in the universe.
-
-   This is because a (e.g. boolean) solver will typically allow cyclic
-   solutions, even though they will be rejected afterwards. So we compute the
-   cycles upfront, and add them as conflicts to prevent them being picked by
-   the solver. *)
-(* This does not work: conflict formulas are expected to be purely disjunctions,
-   both at the level of opam universes and cudf universes. *)
-let _universe_exclude_cycles (u: OpamTypes.universe): OpamTypes.universe =
-  let open OpamTypes in
-  let pkgs_in_cycles, cycles = OpamAdminCheck.cycle_check u in
-  let cycles = List.map (fun cycle ->
-    match cycle with
-    | [] -> assert false
-    | f :: fs ->
-      let f_pkgs = OpamFormula.packages pkgs_in_cycles f in
-      let fs_formula =
-        List.fold_left (fun x y -> OpamFormula.And (x, y))
-          (List.hd fs) (List.tl fs) in
-      (f_pkgs, fs_formula)
-  ) cycles in
-  List.fold_left (fun u (pkgs, f) ->
-    OpamPackage.Set.fold (fun pkg u ->
-      let conflicts =
-        match OpamPackage.Map.find_opt pkg u.u_conflicts with
-        | None -> OpamPackage.Map.add pkg f u.u_conflicts
-        | Some f' -> OpamPackage.Map.add pkg (OpamFormula.Or (f, f')) u.u_conflicts
-      in
-      { u with u_conflicts = conflicts }
-    ) pkgs u
-  ) u cycles
+let compute_universe_cycles (u: OpamTypes.universe): OpamPackage.Set.t list list =
+  let pkgs, cycles = OpamAdminCheck.cycle_check u in
+  List.map (fun cycle ->
+    List.map (fun f -> OpamFormula.packages pkgs f) cycle
+  ) cycles
 
 (********)
 
@@ -92,9 +66,13 @@ module Cover_elt_plan = struct
     ) in
     log "remaining: %d" (card remaining);
     elt, remaining
-end
 
-let dump_file = "last_run.dump"
+  let to_json (elt: t) =
+    `O [
+      "solution", OpamSolver.solution_to_json elt.solution;
+      "useful", OpamPackage.Set.to_json elt.useful;
+    ]
+end
 
 (*********)
 
