@@ -1,4 +1,4 @@
-DUNE_BUILD=dune build
+DUNE_BUILD=dune build --profile=release
 
 all:
 	$(DUNE_BUILD) src/opam_bin_cache.exe
