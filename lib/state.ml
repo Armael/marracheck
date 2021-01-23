@@ -274,7 +274,7 @@ module Cover_state = struct
       |> PkgSet.of_seq
     in
     let cur_broken =
-      List.filter_map select_broken (SerializedLog.items st.cur_report)
+      CCList.filter_map select_broken (SerializedLog.items st.cur_report)
       |> PkgSet.of_list in
     List.fold_left
       (fun set elt -> PkgSet.union set (elt_broken elt))
