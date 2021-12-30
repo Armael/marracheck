@@ -37,19 +37,19 @@ module Repo = struct
       let cmd = command ~dir:path_s "git" [ "init" ] in
       run cmd |> must_succeed cmd
     end;
-    (* cleanup uncommited modifications *)
-    if Job.run (OpamGit.VCS.is_dirty path) then begin
-      Job.of_list [
-        command ~dir:path_s "git" [ "reset"; "--hard"; "HEAD" ];
-        command ~dir:path_s "git" [ "clean"; "-xfd" ];
-      ] |> Job.run
-      |> OpamStd.Option.iter (fun (cmd, res) -> must_succeed cmd res)
-    end;
     match Job.run (OpamGit.VCS.revision path) with
     | None ->
       (* No commits recorded *)
       { path; head = None }
     | Some _ ->
+      (* cleanup uncommited modifications *)
+      if Job.run (OpamGit.VCS.is_dirty path) then begin
+        Job.of_list [
+          command ~dir:path_s "git" [ "reset"; "--hard"; "HEAD" ];
+          command ~dir:path_s "git" [ "clean"; "-xfd" ];
+        ] |> Job.run
+        |> OpamStd.Option.iter (fun (cmd, res) -> must_succeed cmd res)
+      end;
       { path; head = Some (load ~dir:path) }
 
   let commit_new_head ~(sync : 'a -> 'a) msg (st: 'a t) : 'a t =
