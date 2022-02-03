@@ -226,7 +226,7 @@ let call_solver ~time_budget pkg_of_id hard_clauses soft_clauses max_id =
   in
   OpamSystem.remove_file filename;
 
-  let answer = CCString.lines stdout |> CCList.last_opt |> CCOpt.get_exn in
+  let answer = CCString.lines stdout |> CCList.last_opt |> CCOption.get_exn_or "?" in
   match String.split_on_char ' ' answer with
   | "v" :: cs ->
     let pkgs = CCList.filter_map (fun s ->
@@ -271,7 +271,7 @@ let inner_call ~time_budget ~cycles (preamble, universe, request as cudf) =
 
       call_solver ~time_budget pkg_of_id hard_clauses soft_clauses max_id
     )
-    |> CCOpt.get_lazy (fun () ->
+    |> CCOption.get_lazy (fun () ->
       log "(!!) nothing to install";
       universe
     )
@@ -281,7 +281,7 @@ let inner_call ~time_budget ~cycles (preamble, universe, request as cudf) =
 (* In order to satisfy the opam solver API *)
 let call ~criteria ?timeout cudf =
   ignore criteria;
-  let time_budget = CCOpt.get_lazy (fun () ->
+  let time_budget = CCOption.get_lazy (fun () ->
     log "MaxSat needs a time budget";
     raise Exit
   ) timeout in

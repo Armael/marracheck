@@ -214,7 +214,7 @@ let remove_switch gt ~switch_name =
   OpamSwitchCommand.remove gt ~confirm:false switch_name
 
 let recreate_switch gt ~switch_name ~compiler =
-  OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+  OpamRepositoryState.with_ `Lock_none gt @@ fun _rt ->
   let gt = remove_switch gt ~switch_name in
   let gt, sw = create_new_switch gt ~switch_name ~compiler in
   OpamGlobalState.with_write_lock gt @@ fun gt ->
