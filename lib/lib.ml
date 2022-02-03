@@ -95,7 +95,7 @@ let constraint_to_cudf version_map name (op, v) =
     assert false
 
 let name_to_cudf name =
-  Common.CudfAdd.encode (OpamPackage.Name.to_string name)
+  Dose_common.CudfAdd.encode (OpamPackage.Name.to_string name)
 
 let atom2cudf _universe (version_map : int OpamPackage.Map.t) (name,cstr) =
   name_to_cudf name,
@@ -107,6 +107,7 @@ let map_request f r =
   { wish_install = f r.wish_install;
     wish_remove  = f r.wish_remove;
     wish_upgrade = f r.wish_upgrade;
+    wish_all = f r.wish_all;
     criteria = r.criteria;
     extra_attributes = r.extra_attributes; }
 
@@ -118,7 +119,7 @@ let opamcudf_remove universe name constr =
   Cudf.load_universe packages
 
 (** Special package used by Dose internally, should generally be filtered out *)
-let dose_dummy_request = Algo.Depsolver.dummy_request.Cudf.package
+let dose_dummy_request = Dose_algo.Depsolver.dummy_request.Cudf.package
 
 (****************)
 
@@ -157,7 +158,7 @@ let make_request_maxsat ~cycles ~universe ~to_install =
         let call_solver cudf = MaxSat.inner_call ~cycles ~time_budget cudf in
         try
           let r =
-            Algo.Depsolver.check_request_using ~call_solver
+            Dose_algo.Depsolver.check_request_using ~call_solver
               ~explain:true cudf_request in
           r
         with
@@ -169,13 +170,13 @@ let make_request_maxsat ~cycles ~universe ~to_install =
             Printf.sprintf "Solver failed: %s" (Printexc.to_string e) in
           raise (OpamCudf.Solver_failure msg)
       else
-        Algo.Depsolver.Sat (None, Cudf.load_universe [])
+        Dose_algo.Depsolver.Sat (None, Cudf.load_universe [])
     in
     match get_final_universe () with
-    | Algo.Depsolver.Sat (_,u) ->
+    | Dose_algo.Depsolver.Sat (_,u) ->
       OpamTypes.Success (opamcudf_remove u dose_dummy_request None)
-    | Algo.Depsolver.Error str -> fatal "Solver error: %s" str
-    | Algo.Depsolver.Unsat _ -> assert false
+    | Dose_algo.Depsolver.Error str -> fatal "Solver error: %s" str
+    | Dose_algo.Depsolver.Unsat _ -> assert false
   in
 
   (* Morally:
@@ -190,7 +191,7 @@ let make_request_maxsat ~cycles ~universe ~to_install =
   let resolve u req =
     try
       let resp = opamcudf_resolve ~cycles ~version_map u req in
-      OpamCudf.to_actions (fun u -> u) u resp
+      OpamCudf.to_actions u resp
     with OpamCudf.Solver_failure msg ->
       OpamConsole.error_and_exit `Solver_failure "%s" msg
   in

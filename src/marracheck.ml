@@ -523,7 +523,7 @@ let build
       ~(to_install: PkgSet.t)
       (cover_state_repo : Cover_state.t Repo.t)
     =
-    let cover_state = CCOpt.get_exn cover_state_repo.head in
+    let cover_state = CCOption.get_exn_or "?" cover_state_repo.head in
     match cover_state.cur_plan.data with
     | None ->
        build_next_cover_element ~universe ~to_install cover_state_repo cover_state
@@ -596,7 +596,7 @@ let build
             (Printf.sprintf "New report for package %s"
                (OpamPackage.to_string (fst report_item)))
             { cover_state_repo with head = Some !cover_state } in
-        cover_state := CCOpt.get_exn repo.head
+        cover_state := CCOption.get_exn_or "?" repo.head
     in
 
     let cover_state =
