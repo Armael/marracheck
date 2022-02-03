@@ -64,7 +64,9 @@ let () =
   let gs = OpamGlobalState.load `Lock_read in
   OpamSwitchState.with_ `Lock_read gs (fun switch ->
     let u = get_universe switch in
+    log_inline "computing installable packages...";
     let all_packages = OpamSolver.installable u in
+    log_inline " Done\n";
     let all_names = OpamPackage.names_of_packages all_packages in
     let all_packages_last_version =
       (* only used for info/debugging *)

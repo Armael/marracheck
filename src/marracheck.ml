@@ -136,18 +136,32 @@ let remove_from_universe (u: universe) (to_remove : PkgSet.t): universe =
 let compute_package_selection (u: universe)
   : package_selection -> PkgSet.t
   =
-  (* NB: this is somewhat expensive to compute *)
-  let allpkgs = OpamSolver.installable u in
   function
-  | `All -> allpkgs
+  | `All ->
+    log "Computing the set of all installable packages...";
+  (* NB: this is somewhat expensive to compute *)
+    let allpkgs = OpamSolver.installable u in
+    log "Done";
+    allpkgs
+
   | `Packages pkgs ->
-    OpamSolver.dependencies
-      ~depopts:false ~build:true ~post:true ~installed:false u
-      (PkgSet.of_list pkgs)
+    log "Computing the set of transitively installable dependencies...";
+    let pkgs =
+      OpamSolver.dependencies
+        ~depopts:false ~build:true ~post:true ~installed:false u
+        (PkgSet.of_list pkgs) in
+    log "Done";
+    pkgs
+
   | `Revdeps pkgs ->
-    OpamSolver.reverse_dependencies
-      ~depopts:false ~build:true ~post:true ~installed:false u
-      (PkgSet.of_list pkgs)
+    log "Computing the set of transitively installable reverse dependencies...";
+    let pkgs =
+      OpamSolver.reverse_dependencies
+        ~depopts:false ~build:true ~post:true ~installed:false u
+        (PkgSet.of_list pkgs)
+    in
+    log "Done";
+    pkgs
 
 let universe ~sw =
   OpamSwitchState.universe sw ~requested:OpamPackage.Name.Set.empty
