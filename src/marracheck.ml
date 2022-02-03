@@ -133,16 +133,21 @@ let remove_from_universe (u: universe) (to_remove : PkgSet.t): universe =
   }
 
 (* Assumes a clean universe *)
-let compute_package_selection (u: universe) (compiler: package)
+let compute_package_selection (u: universe)
   : package_selection -> PkgSet.t
   =
   (* NB: this is somewhat expensive to compute *)
   let allpkgs = OpamSolver.installable u in
   function
   | `All -> allpkgs
-  | `Revdeps _ | `Packages _ ->
-    ignore compiler;
-    assert false (* TODO *)
+  | `Packages pkgs ->
+    OpamSolver.dependencies
+      ~depopts:false ~build:true ~post:true ~installed:false u
+      (PkgSet.of_list pkgs)
+  | `Revdeps pkgs ->
+    OpamSolver.reverse_dependencies
+      ~depopts:false ~build:true ~post:true ~installed:false u
+      (PkgSet.of_list pkgs)
 
 let universe ~sw =
   OpamSwitchState.universe sw ~requested:OpamPackage.Name.Set.empty
@@ -694,7 +699,7 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
      the packages that we already know to be broken
   *)
   let compute_selection_packages : universe -> package_set =
-    fun u -> compute_package_selection u compiler package_selection in
+    fun u -> compute_package_selection u package_selection in
 
   let work_state =
     let view = Work_state.View_single.load_or_create compiler in
