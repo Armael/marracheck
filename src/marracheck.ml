@@ -316,6 +316,19 @@ let retire_cover_state
 
 (* Recover or initialize an opam_root with an up-to-date repository *)
 let recover_opam_root ~workdir ~repo_url opamroot =
+  (* Does the opamroot look like a corrupted, partially initialized opamroot?
+     (concretely, we check for the cache script that we normally write after
+     initializing the opamroot) *)
+  if OpamFile.exists (OpamPath.config opamroot) &&
+     not (OpamFile.exists (
+       OpamFile.make
+         File.(Op.(OpamPath.hooks_dir opamroot // Cache_script.name))
+     ))
+  then begin
+    log "The opam root looks like it has been only partially initialized. Removing it...";
+    OpamSystem.remove_dir (File.Dir.to_string opamroot)
+  end;
+
   (* Is there anything in the opamroot? *)
   match OpamFile.exists (OpamPath.config opamroot) with
   | false ->
