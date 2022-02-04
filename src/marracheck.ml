@@ -779,7 +779,7 @@ let run_term =
   let arg_working_dir =
     let open Arg in
     required
-    & pos 1 (some dir) None
+    & pos 1 (some string) None
     & info
     ~docv:"WORKING_DIR"
     ~doc:"The path to the directory where marracheck will store its
