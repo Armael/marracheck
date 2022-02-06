@@ -1,6 +1,6 @@
 open OpamCudfSolverSig
 
-let log f = OpamConsole.log "MaxSat" f
+let log = Utils.log
 
 let name = "maxsat"
 
@@ -219,12 +219,25 @@ let call_solver ~time_budget pkg_of_id hard_clauses soft_clauses max_id =
       OpamSystem.copy_file filename (debug_file ^ ".wcnf")
   end;
 
-  let (_ret, stdout) =
-    Lwt_main.run @@
-    spawn_lwt ~timeout:time_budget
-      (Printf.sprintf "exec %s %s" !solver_path filename)
+  let cmd = Printf.sprintf "exec %s %s" !solver_path filename in
+  log "Running external solver with time budget: %f" time_budget;
+  let (ret, stdout) =
+    Lwt_main.run @@ spawn_lwt ~timeout:time_budget cmd
   in
-  OpamSystem.remove_file filename;
+  (* OpamSystem.remove_file filename; *)
+
+  (* Non-error return values for this solver are 0 (?), 10, 20, 30, 40 *)
+  begin match ret with
+    | WEXITED (0 | 10 | 20 | 30 | 40 as ret) ->
+      log "solver exited successfully (with code %d)" ret
+    | _ ->
+      log "solver command (%s) exited with non-zero code (%s). Aborting." cmd
+        (match ret with
+         | WEXITED n -> Printf.sprintf "WEXITED %d" n
+         | WSIGNALED n -> Printf.sprintf "WSIGNALED %d" n
+         | WSTOPPED n -> Printf.sprintf "WSTOPPED %d" n);
+      exit 1
+  end;
 
   let answer = CCString.lines stdout |> CCList.last_opt |> CCOption.get_exn_or "?" in
   match String.split_on_char ' ' answer with

@@ -204,4 +204,5 @@ let make_request_maxsat ~cycles ~universe ~to_install =
       let s = OpamCudf.atomic_actions ~simple_universe ~complete_universe actions in
       (Obj.magic s : OpamSolver.solution) (* XXXX *)
     with OpamCudf.Cyclic_actions _cycles ->
-      assert false
+      fatal "The custom solver produced a cyclic solution.\
+             This should not happen, since we worked to make cycles illegal upfront."
