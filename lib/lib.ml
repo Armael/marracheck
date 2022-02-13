@@ -156,6 +156,9 @@ let make_request_maxsat ~cycles ~universe ~to_install =
       let cudf_request = OpamCudf.to_cudf univ req in
       if Cudf.universe_size univ > 0 then
         let call_solver cudf = MaxSat.inner_call ~cycles ~time_budget cudf in
+        (* NOTE here by default opam does preprocess_cudf_request (in OpamCudf).
+           (can be disabled, but enabled by default) is it only an optimisation
+           we don't care about? *)
         try
           let r =
             Dose_algo.Depsolver.check_request_using ~call_solver
@@ -174,9 +177,36 @@ let make_request_maxsat ~cycles ~universe ~to_install =
     in
     match get_final_universe () with
     | Dose_algo.Depsolver.Sat (_,u) ->
-      OpamTypes.Success (opamcudf_remove u dose_dummy_request None)
+      let u = opamcudf_remove u dose_dummy_request None in
+      Cudf.remove_package u OpamCudf.opam_invariant_package;
+      OpamTypes.Success u
     | Dose_algo.Depsolver.Error str -> fatal "Solver error: %s" str
     | Dose_algo.Depsolver.Unsat _ -> assert false
+  in
+
+  (* OpamSolver.opam_invariant_package *)
+  let opamsolver_opam_invariant_package version_map invariant =
+    let depends =
+      OpamFormula.to_atom_formula invariant
+      |> OpamFormula.map (fun at -> Atom (atom2cudf () version_map at))
+      |> OpamFormula.cnf_of_formula
+      |> OpamFormula.ands_to_list
+      |> List.map (OpamFormula.fold_right (fun acc x -> x::acc) [])
+    in {
+      Cudf.
+      package = OpamCudf.opam_invariant_package_name;
+      version = snd OpamCudf.opam_invariant_package;
+      depends;
+      conflicts = [];
+      provides = [];
+      installed = true;
+      was_installed = true;
+      keep = `Keep_version;
+      pkg_extra = [
+        OpamCudf.s_source, `String "SWITCH_INVARIANT";
+        OpamCudf.s_source_number, `String "NULL";
+      ];
+    }
   in
 
   (* Morally:
@@ -186,22 +216,34 @@ let make_request_maxsat ~cycles ~universe ~to_install =
   let all_packages = universe.u_available ++ universe.u_installed in
   let version_map = OpamSolver.cudf_versions_map universe all_packages in
   let univ_gen = OpamSolver.load_cudf_universe universe ~version_map all_packages in
-  let simple_universe = univ_gen ~build:true ~post:true () in
+  let cudf_universe = univ_gen ~build:true ~post:true () in
+  let requested_names =
+    OpamPackage.Name.Set.of_list (List.map fst request.wish_all) in
   let cudf_request = map_request (atom2cudf universe version_map) request in
-  let resolve u req =
-    try
-      let resp = opamcudf_resolve ~cycles ~version_map u req in
-      OpamCudf.to_actions u resp
-    with OpamCudf.Solver_failure msg ->
-      OpamConsole.error_and_exit `Solver_failure "%s" msg
+  let invariant_pkg =
+    opamsolver_opam_invariant_package version_map universe.u_invariant
   in
-  match resolve simple_universe cudf_request with
+  let solution =
+    try
+      Cudf.add_package cudf_universe invariant_pkg;
+      let resp = opamcudf_resolve ~cycles ~version_map cudf_universe cudf_request in
+      Cudf.remove_package cudf_universe OpamCudf.opam_invariant_package;
+      OpamCudf.to_actions cudf_universe resp
+    with OpamCudf.Solver_failure msg ->
+      let bt = Printexc.get_raw_backtrace () in
+      OpamConsole.error "%s" msg;
+      Printexc.raise_with_backtrace
+        OpamStd.Sys.(Exit (get_exit_code `Solver_failure))
+        bt
+  in
+  match solution with
   | Conflicts _ -> fatal "conflicts in the solution"
   | Success actions ->
     let simple_universe = univ_gen ~depopts:true ~build:false ~post:false () in
     let complete_universe = univ_gen ~depopts:true ~build:true ~post:false () in
     try
       let s = OpamCudf.atomic_actions ~simple_universe ~complete_universe actions in
+      OpamCudf.trim_actions cudf_universe requested_names s;
       (Obj.magic s : OpamSolver.solution) (* XXXX *)
     with OpamCudf.Cyclic_actions _cycles ->
       fatal "The custom solver produced a cyclic solution.\
