@@ -116,13 +116,16 @@ let init_opam_root ~workdir ~opamroot ~repo_url =
 let prepare_universe (u: universe): universe =
   (* Restrict installed packages to the set of base packages, as with a
      fresh switch *)
-  let u = { u with u_installed = u.u_base;
-                   u_installed_roots =
-                     PkgSet.inter u.u_base u.u_installed_roots;
-                   u_pinned = PkgSet.empty;
-          } in
-  (* Lib.universe_exclude_cycles u *)
-  u
+  let base_deps =
+    OpamSolver.dependencies ~depopts:true ~build:true ~post:true
+      ~installed:true u u.u_base
+  in
+  let base = PkgSet.union u.u_base base_deps in
+  { u with u_installed = base;
+           u_installed_roots =
+             PkgSet.inter base u.u_installed_roots;
+           u_pinned = PkgSet.empty;
+  }
 
 (* Used to discard packages from the universe that we know are broken
    (e.g. do not build). *)
