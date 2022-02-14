@@ -399,14 +399,19 @@ let recover_opam_switch_for_plan ~switch_name ~universe ~compiler plan =
     OpamGlobalState.with_ `Lock_none @@ fun gt ->
     OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
     let elt_installs = Cover_elt_plan.installs plan in
+    (* will be installed in the end: base packages + elt_installs *)
+    let elt_pkgs = PkgSet.union elt_installs universe.u_installed in
+    (* TODO: we could be less conservative and check (using the solver?) that
+       the plan can be executed in the current switch, instead of conservatively
+       assuming that any package not in the plan but currently installed may
+       conflict with the plan. *)
     let reinstall_switch =
-      not (PkgSet.subset
-             sw.installed
-             (PkgSet.union
-                elt_installs universe.u_installed))
+      not (PkgSet.subset sw.installed elt_pkgs)
     in
     if reinstall_switch then begin
-      log "Re-creating a fresh opam switch.";
+      log "Some packages currently installed in the switch are not part of \
+           the set of packages we wish to install.";
+      log "Re-creating a fresh opam switch...";
       let sw, gt =
         OpamGlobalState.with_write_lock gt @@ fun gt ->
         recreate_switch gt ~switch_name ~compiler in
