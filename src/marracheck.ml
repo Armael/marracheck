@@ -147,7 +147,7 @@ let universe ~sw =
     OpamTypes.Query (* for historical reasons; should not matter *)
 
 let switch_universe () =
-  OpamGlobalState.with_ `Lock_none @@ fun gt ->
+  OpamGlobalState.with_ `Lock_read @@ fun gt ->
   OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
   let u = universe ~sw in
   OpamSwitchState.drop sw; OpamGlobalState.drop gt;
@@ -193,24 +193,24 @@ let get_repo_timestamp (repo_url: OpamUrl.t) =
 
 let create_new_switch gt ~switch_name ~compiler =
   log "Creating a new switch %s..." (OpamSwitch.to_string switch_name);
-  let (gt, sw) =
+  let ((), sw) =
     OpamRepositoryState.with_ `Lock_none gt @@ begin fun rt ->
       (* setup a new switch with [compiler_variant] as compiler *)
       OpamSwitchCommand.create gt ~rt
         ~update_config:true
         ~invariant:(OpamFormula.of_conjunction [compiler.name, Some (`Eq, compiler.version)])
         switch_name
-        (fun sw -> gt, OpamSwitchCommand.install_compiler sw)
+        (fun sw -> (), OpamSwitchCommand.install_compiler sw)
     end in
   log "New switch successfully created";
-  (gt, sw)
+  sw
 
 let remove_switch gt ~switch_name =
   OpamSwitchCommand.remove gt ~confirm:false switch_name
 
 let recreate_switch gt ~switch_name ~compiler =
   let gt = remove_switch gt ~switch_name in
-  let gt, sw = create_new_switch gt ~switch_name ~compiler in
+  let sw = create_new_switch gt ~switch_name ~compiler in
   let sw = OpamSwitchAction.set_current_switch gt sw in
   OpamSwitchState.unlock sw, gt
 
@@ -344,11 +344,12 @@ let recover_opam_root ~workdir ~repo_url opamroot =
 
 let recover_opam_switch ~compiler ~compiler_variant ~switch_name =
   OpamGlobalState.with_ `Lock_write @@ fun gt ->
-  let (gt, sw) =
+  let gt =
     if not (OpamGlobalState.switch_exists gt switch_name) then begin
       log "Creating new opam switch %s" compiler_variant;
-      let (gt, sw) = create_new_switch gt ~switch_name ~compiler in
-      (gt, OpamSwitchState.unlock sw)
+      let sw = create_new_switch gt ~switch_name ~compiler in
+      OpamSwitchState.drop sw;
+      gt
     end else begin
       log "Existing opam switch %s found" compiler_variant;
       (* Check that the switch repositories are what we expect
@@ -379,14 +380,16 @@ let recover_opam_switch ~compiler ~compiler_variant ~switch_name =
              base packages of the switch" (OpamPackage.to_string compiler);
         log "Creating a new switch instead";
         let (sw, gt) = recreate_switch gt ~switch_name ~compiler in
-        (gt, sw)
+        OpamSwitchState.drop sw;
+        gt
       end else begin
-        OpamSwitchState.with_ `Lock_none gt ~switch:switch_name
-          (fun sw -> gt, OpamSwitchAction.set_current_switch gt sw)
+        OpamSwitchState.with_ `Lock_none gt ~switch:switch_name @@ fun sw ->
+        let sw = OpamSwitchAction.set_current_switch gt sw in
+        OpamSwitchState.drop sw;
+        gt
       end
     end
   in
-  OpamSwitchState.drop sw;
   OpamGlobalState.drop gt;
   ()
 
