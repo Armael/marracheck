@@ -28,52 +28,34 @@ let () =
 let init_opam_root ~workdir ~opamroot ~repo_url =
   let init_config = OpamInitDefaults.init_config ~sandboxing:true () in
   (* Setup the hooks for the binary cache script *)
-  let wrap cmds (hook_cmd, hook_filter) =
-    let fand fopt f = match fopt with
-      | None -> f
-      | Some f' -> FAnd (f', f)
-    in
-    if cmds = [] then
-      [(hook_cmd, hook_filter)]
-    else
-      CCList.flat_map (fun (cmd, filter) ->
-        match hook_filter with
-        | None -> [(hook_cmd @ cmd, filter)]
-        | Some hook_filter ->
-          [hook_cmd @ cmd, Some (fand filter hook_filter);
-           cmd, Some (fand filter (FNot hook_filter))]
-      ) cmds
-  in
   let s x = CString x, None in
   let i x = CIdent x, None in
   let script = s "%{hooks}%/opam-bin-cache.sh" in
-  (* TODO: check if these two filters are correct. This is copy-paste from
-     opamInitDefaults.ml, I have no idea what I'm doing. *)
+  (* This should reflect the "Use as" instructions at the end of the binary
+     cache script (see cache_script.ml) *)
   let build_id_isdef =
     FDefined (FIdent ([], OpamVariable.of_string "build-id", None)) in
   let error_code_iszero =
     FOp (FIdent ([], OpamVariable.of_string "error-code", None),
          `Eq, FString "0") in
   let w = OpamFile.InitConfig.wrappers init_config in
-  (* This should reflect the "Use as" instructions at the end of the binary
-     cache script (see cache_script.ml) *)
   let w =
     let open OpamFile.Wrappers in
     { w with
       pre_install =
-        wrap w.pre_install
-          ([ script; s "restore"; i "build-id"; i "name" ],
-           Some build_id_isdef);
+        ([ script; s "restore"; i "build-id"; i "name" ],
+           Some build_id_isdef) ::
+        w.pre_install;
       wrap_build =
-        wrap w.wrap_build
-          ([ script; s "wrap"; i "build-id" ], Some build_id_isdef);
+        ([ script; s "wrap"; i "build-id" ], Some build_id_isdef) ::
+        w.wrap_build;
       wrap_install =
-        wrap w.wrap_install
-          ([ script; s "wrap"; i "build-id" ], Some build_id_isdef);
+        ([ script; s "wrap"; i "build-id" ], Some build_id_isdef) ::
+        w.wrap_install;
       post_install =
-        wrap w.post_install
-          ([ script; s "store"; i "build-id"; i "installed-files" ],
-           Some (FAnd (build_id_isdef, error_code_iszero)));
+        ([ script; s "store"; i "build-id"; i "installed-files" ],
+         Some (FAnd (build_id_isdef, error_code_iszero))) ::
+        w.post_install;
     } in
   let init_config = OpamFile.InitConfig.with_wrappers w init_config in
   let repo =
