@@ -370,6 +370,8 @@ let recover_opam_switch ~compiler ~compiler_variant ~switch_name =
       end;
       (* Reinstall the switch if the compiler is not one of the base
          packages, or if it is not installed *)
+      (* TODO update/refine/fix this criterion, esp with switch invariants in
+         mind? *)
       let sw_base_installed =
         OpamSwitchState.with_ `Lock_none gt ~switch:switch_name
           (fun sw ->
