@@ -681,6 +681,7 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   in
 
   (* Setup the opam-related global state *)
+  OpamArg.init_opam_env_variabes OpamCLIVersion.Sourced.current;
   OpamClientConfig.opam_init
     ~best_effort:false
     ~root_dir:opamroot
