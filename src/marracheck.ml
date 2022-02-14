@@ -148,13 +148,7 @@ let compute_package_selection (u: universe)
     allpkgs
 
   | `Packages pkgs ->
-    log "Computing the set of transitively installable dependencies...";
-    let pkgs =
-      OpamSolver.dependencies
-        ~depopts:false ~build:true ~post:true ~installed:false u
-        (PkgSet.of_list pkgs) in
-    log "Done";
-    pkgs
+    OpamPackage.Set.of_list pkgs
 
   | `Revdeps pkgs ->
     log "Computing the set of transitively installable reverse dependencies...";
