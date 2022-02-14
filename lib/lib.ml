@@ -92,6 +92,8 @@ let constraint_to_cudf version_map name (op, v) =
   with Not_found ->
     (* Hopefully this doesn't happen according to the comment in opamSolver.ml
     *)
+    (* FIXME This may happen if the user asks to install a version that does not
+       exist! *)
     assert false
 
 let name_to_cudf name =
