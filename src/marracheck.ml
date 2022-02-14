@@ -156,10 +156,7 @@ let switch_universe () =
 let validate_workdir working_dir =
   let workdir = Dir.of_string working_dir in
   mkdir workdir;
-  if (OpamSystem.dir_is_empty working_dir) ||
-     (File.exists_dir File.Op.(workdir / opamroot_path))
-  then Some workdir
-  else None
+  Some workdir
 
 let validate_compiler_variant s =
   let open OpamPackage in
