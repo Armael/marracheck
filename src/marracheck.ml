@@ -149,9 +149,7 @@ let universe ~sw =
 let switch_universe () =
   OpamGlobalState.with_ `Lock_read @@ fun gt ->
   OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
-  let u = universe ~sw in
-  OpamSwitchState.drop sw; OpamGlobalState.drop gt;
-  u
+  universe ~sw
 
 let validate_workdir working_dir =
   let workdir = Dir.of_string working_dir in
@@ -332,7 +330,7 @@ let recover_opam_root ~workdir ~repo_url opamroot =
             OpamRepositoryName.default repo_url None in
         OpamRepositoryState.write_config rt;
         (), rt
-      end |> fun ((), rt) -> OpamRepositoryState.drop rt
+      end |> fun ((), _rt) -> ()
     end;
     log "Updating the repository...";
     OpamGlobalState.with_ `Lock_write @@ begin fun gt ->
@@ -414,10 +412,10 @@ let recover_opam_switch_for_plan ~switch_name ~universe ~compiler plan =
       log "Some packages currently installed in the switch are not part of \
            the set of packages we wish to install.";
       log "Re-creating a fresh opam switch...";
-      let sw, gt =
+      let _sw, _gt =
         OpamGlobalState.with_write_lock gt @@ fun gt ->
         recreate_switch gt ~switch_name ~compiler in
-      OpamSwitchState.drop sw; OpamGlobalState.drop gt
+      ()
     end
 
 (* Archive the current cover element if necessary *)
