@@ -201,15 +201,16 @@ let create_new_switch gt ~switch_name ~compiler =
         (fun sw -> (), OpamSwitchCommand.install_compiler sw)
     end in
   log "New switch successfully created";
-  sw
+  (* [sw.switch global] is the new [gt]; we need to return it, it has been
+     updated! (to contain the newly created switch) *)
+  sw, sw.switch_global
 
 let remove_switch gt ~switch_name =
   OpamSwitchCommand.remove gt ~confirm:false switch_name
 
 let recreate_switch gt ~switch_name ~compiler =
   let gt = remove_switch gt ~switch_name in
-  let sw = create_new_switch gt ~switch_name ~compiler in
-  let sw = OpamSwitchAction.set_current_switch gt sw in
+  let sw, gt = create_new_switch gt ~switch_name ~compiler in
   OpamSwitchState.unlock sw, gt
 
 let build_log_of_exn exn =
@@ -342,10 +343,10 @@ let recover_opam_root ~workdir ~repo_url opamroot =
 
 let recover_opam_switch ~compiler ~compiler_variant ~switch_name =
   OpamGlobalState.with_ `Lock_write @@ fun gt ->
-  let gt =
+  let _gt =
     if not (OpamGlobalState.switch_exists gt switch_name) then begin
       log "Creating new opam switch %s" compiler_variant;
-      let sw = create_new_switch gt ~switch_name ~compiler in
+      let sw, gt = create_new_switch gt ~switch_name ~compiler in
       OpamSwitchState.drop sw;
       gt
     end else begin
@@ -383,14 +384,13 @@ let recover_opam_switch ~compiler ~compiler_variant ~switch_name =
         OpamSwitchState.drop sw;
         gt
       end else begin
-        OpamSwitchState.with_ `Lock_none gt ~switch:switch_name @@ fun sw ->
-        let sw = OpamSwitchAction.set_current_switch gt sw in
-        OpamSwitchState.drop sw;
-        gt
+        begin OpamSwitchState.with_ `Lock_none gt ~switch:switch_name @@ fun sw ->
+          let _sw = OpamSwitchAction.set_current_switch gt sw in ()
+        end;
+        OpamGlobalState.unlock gt
       end
     end
   in
-  OpamGlobalState.drop gt;
   ()
 
 (* Are the packages currently installed in the opam switch compatible with
