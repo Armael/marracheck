@@ -248,5 +248,5 @@ let make_request_maxsat ~cycles ~universe ~to_install =
       OpamCudf.trim_actions cudf_universe requested_names s;
       (Obj.magic s : OpamSolver.solution) (* XXXX *)
     with OpamCudf.Cyclic_actions _cycles ->
-      fatal "The custom solver produced a cyclic solution.\
+      fatal "The custom solver produced a cyclic solution. \
              This should not happen, since we worked to make cycles illegal upfront."

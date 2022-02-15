@@ -701,24 +701,18 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
      Installed packages in the switch include at least our compiler and
      related base packages (there can also be other packages). *)
 
-  (* Compute a set of packages from the user package selection.
-     This depends on the universe, which is resolved below:
-     we might want to filter the universe from the opam switch to remove
-     the packages that we already know to be broken
-  *)
-  let compute_selection_packages : universe -> package_set =
-    fun u -> compute_package_selection u package_selection in
-
   let work_state =
     let view = Work_state.View_single.load_or_create compiler in
     Work_state.load_or_create ~view ~workdir in
   let switch_state = work_state.view in
+  (* TODO: do we want to filter the universe to exclude packages that we know
+     are broken? *)
   let universe = switch_universe () |> prepare_universe in
   log "Computing cycles in the packages universe...";
   let universe_cycles = Lib.compute_universe_cycles universe in
   log "Done";
 
-  let selection_packages = compute_selection_packages universe in
+  let selection_packages = compute_package_selection universe package_selection in
   log "User package selection includes %d packages"
     (PkgSet.cardinal selection_packages);
 

@@ -199,16 +199,15 @@ let spawn_lwt ~timeout (cmd: string) =
     stdout >>= (fun stdout ->
       Lwt.return (ret_code, stdout)))
 
-let call_solver ~time_budget pkg_of_id hard_clauses soft_clauses max_id =
+let call_solver ~time_budget pkg_of_id hard_clauses soft_clauses _max_id =
   let filename, cout = Filename.open_temp_file "marracheck-maxsat" "" in
 
-  log "MaxSat instance in: %s" filename;
-
-  for i = 1 to max_id do
-    let pkg = pkg_of_id i in
-    Printf.fprintf cout "c %d -> %s.%d\n"
-      i pkg.Cudf.package pkg.Cudf.version
-  done;
+  (* log "MaxSat instance in: %s" filename; *)
+  (* for i = 1 to max_id do *)
+  (*   let pkg = pkg_of_id i in *)
+  (*   Printf.fprintf cout "c %d -> %s.%d\n" *)
+  (*     i pkg.Cudf.package pkg.Cudf.version *)
+  (* done; *)
 
   output_wcnf cout hard_clauses soft_clauses;
   close_out cout;
@@ -224,7 +223,7 @@ let call_solver ~time_budget pkg_of_id hard_clauses soft_clauses max_id =
   let (ret, stdout) =
     Lwt_main.run @@ spawn_lwt ~timeout:time_budget cmd
   in
-  (* OpamSystem.remove_file filename; *)
+  OpamSystem.remove_file filename;
 
   (* Non-error return values for this solver are 0 (?), 10, 20, 30, 40 *)
   begin match ret with
