@@ -216,7 +216,7 @@ let make_request_maxsat ~cycles ~universe ~to_install =
   let open OpamTypes in
   let open OpamPackage.Set.Op in
   let all_packages = universe.u_available ++ universe.u_installed in
-  let version_map = OpamSolver.cudf_versions_map universe all_packages in
+  let version_map = OpamSolver.cudf_versions_map universe in
   let univ_gen = OpamSolver.load_cudf_universe universe ~version_map all_packages in
   let cudf_universe = univ_gen ~build:true ~post:true () in
   let requested_names =

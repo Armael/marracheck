@@ -126,7 +126,7 @@ let compute_package_selection (u: universe)
     log "Computing the set of all installable packages...";
   (* NB: this is somewhat expensive to compute *)
     let allpkgs = OpamSolver.installable u in
-    log "Done";
+    log "Done (there are %d installable packages)" (PkgSet.cardinal allpkgs);
     allpkgs
 
   | `Packages pkgs ->
