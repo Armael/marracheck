@@ -20,7 +20,7 @@ depends: [
   "bos"
   "oseq"
   "containers" {>= "3.6"}
-  "cmdliner"
+  "cmdliner" {< "1.1.0"}
   "ezjsonm" {>= "1.1.0"}
   "yojson"
   "lwt"

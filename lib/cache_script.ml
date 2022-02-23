@@ -2,7 +2,7 @@ let name = "opam-bin-cache.sh"
 
 let script ~workdir =
   let (^/) = Filename.concat in
-  let cache = OpamFilename.(to_string Op.(workdir // State.cache_path)) in
+  let cache = State.(p ~workdir cache_path) in
 
   {|#!/bin/sh -uex|} ^
 

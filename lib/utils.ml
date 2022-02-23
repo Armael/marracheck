@@ -39,9 +39,13 @@ let log fmt =
   Format.fprintf Format.err_formatter "LOG %a: " timestamp ();
   Format.fprintf Format.err_formatter (fmt ^^ "\n%!")
 
+exception Fatal
+
+(* raising [Fatal] instead of calling [exit 1] so that we get a backtrace when
+   running with OCAMLRUNPARAM=b. *)
 let fatal fmt =
   Format.fprintf Format.err_formatter "ERROR %a: " timestamp ();
-  Format.kfprintf (fun _ -> exit 1) Format.err_formatter (fmt ^^ "\n%!")
+  Format.kfprintf (fun _ -> raise Fatal) Format.err_formatter (fmt ^^ "@.")
 
 let mkdir dir =
   let dir = OpamFilename.Dir.to_string dir in
