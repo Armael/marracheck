@@ -1,6 +1,8 @@
 let name = "opam-bin-cache.sh"
 
+(* NOTE: [workdir] needs to be an absolute path here! *)
 let script ~workdir =
+  assert (not (Filename.is_relative workdir));
   let (^/) = Filename.concat in
   let cache = State.(p ~workdir cache_path) in
 

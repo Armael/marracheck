@@ -626,13 +626,20 @@ let build
   start_build ~universe ~to_install
 
 let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
+  (* resolve workdir as an absolute path *)
+  let workdir =
+    if Filename.is_relative working_dir then
+      Filename.concat (Sys.getcwd ()) working_dir
+    else
+      working_dir
+  in
+
   (* create [working_dir] if it does not exist *)
   mkdir (Dir.of_string working_dir);
 
   (* Create a state handle for the workdir, checking that it conforms to the
      expected schema, creating directories/files with default values if needed
      *)
-  let workdir = working_dir in
   let st = State.load ~workdir in
 
   let compiler = get_or_fatal (validate_compiler_variant compiler_variant)
