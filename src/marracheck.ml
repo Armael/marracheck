@@ -829,7 +829,7 @@ let run_term =
     & opt (conv ~docv (parser, printer)) `All
     & info
       ~docv
-      ~doc:"the selection of packages to build with marracheck:\n
+      ~doc:"The selection of packages to build with marracheck:\n
             - $(i,all) will build all installable packages for this compiler
               version in the switch\n
             - $(i,packages(foo, bar, baz)) will build the listed packages
@@ -850,24 +850,25 @@ let run_term =
         $ arg_repo_url
         $ arg_working_dir
         $ arg_compiler_variant
-        $ arg_package_selection),
-  Term.info "run"
-    ~doc:"Build the selected opam packages from the given opam repository. \
-          All state of marracheck (build cache, action logs, task set...) \
-          are stored persistently in the working directory.\n"
+        $ arg_package_selection)
+  |> Cmd.v
+       (Cmd.info "run"
+          ~doc:"Build the selected opam packages from the given opam repository. \
+                All state of marracheck (build cache, action logs, task set...) \
+                are stored persistently in the working directory.\n")
 
 let cache_term =
   let open Cmdliner in
-  Term.(const cache_cmd $ const ()),
-  Term.info "cache"
-    ~doc:"Maintenance operation on the working cache \
-          of a marracheck working directory.\n
-          (TODO Not implemented yet)"
+  Term.(const cache_cmd $ const ())
+  |> Cmd.v
+       (Cmd.info "cache"
+          ~doc:"Maintenance operation on the working cache \
+                of a marracheck working directory.\n
+                (TODO Not implemented yet)")
 
 let usage_term =
   let open Cmdliner in
-  Term.(ret (const (`Help (`Auto, None)))),
-  Term.info "marracheck"
+  Cmd.info "marracheck"
     ~doc:"build many packages from an opam repository"
     ~man:[
       `S Manpage.s_description;
@@ -881,8 +882,8 @@ let usage_term =
       `Pre "marracheck run tmp/opam-repository tmp/working-dir 4.07.1";
       `Pre "marracheck cache clean # TODO";
     ]
-    ~exits:Term.default_exits (* TODO *)
+    ~exits:Cmd.Exit.defaults (* TODO *)
 
 let () =
   let open Cmdliner in
-  Term.(exit @@ eval_choice usage_term [run_term; cache_term])
+  exit @@ Cmd.eval @@ Cmd.group usage_term [run_term; cache_term]
