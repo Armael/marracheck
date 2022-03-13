@@ -49,3 +49,23 @@ make r
 
 This will build an `open-wbo-inc_release` binary, that you need to copy
 somewhere where it can be found through `$PATH`.
+
+## Running marracheck
+
+Finally, marracheck requires an opam repository available locally (for example
+with `git clone https://github.com/ocaml/opam-repository`). Then marracheck
+can be run with:
+
+```sh
+dune exec -- src/marracheck.exe run \
+  /path/to/opam-repository \
+  /path/to/marracheck-state \
+  ocaml-base-compiler.4.13.1
+```
+
+This will attempt to compile all versions of all packages compatible with ocaml
+4.13.1.  The `/path/to/marracheck-state` directory will contain a binary
+`cache` directory of the packages, a standard `opamroot`, and a `switches`
+directory that tracks the progress of marracheck.  The behavior of opam invoked
+by marracheck can be configured with environment variables (see
+`opam env --help` for a full list.)

@@ -30,7 +30,7 @@ depends: [
 # Dependencies for the vendored opam libs
 # (see the .opam files in the vendored-opam git submodule)
   "re" {>= "1.9.0"}
-  "cmdliner" {>= "0.9.8"}
+  "cmdliner" {>= "1.1.0"}
   "ocamlgraph"
   "cppo"
   "mccs" {>= "1.1+9"}
