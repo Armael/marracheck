@@ -477,7 +477,7 @@ let recover_switch_state
     end;
     log "Initialize a fresh cover state";
     (* This initializes a fresh cover_state repository; it contains
-       no data at this point (i.e. [cover_state_repo.head = None]) *)
+       no data at this point *)
     State.(mkdir st @@ cover_state_path ~switch);
     (* Initialize the directory. *)
     (* NOTE: we need to provide the timestamp explicitly, but for the rest we

@@ -3,11 +3,11 @@ open Utils
 (* Definition of the schema *)
 
 module Fmt = struct
-  let raw = Fs.mk_data_format ()
-  let cover = Fs.mk_data_format ()
-  let cover_elt_plan_opt = Fs.mk_data_format ()
-  let package_report = Fs.mk_data_format ()
-  let pkg_set = Fs.mk_data_format ()
+  let raw : string Fs.data_format = Fs.mk_data_format ()
+  let cover : Data.Cover.t Fs.data_format = Fs.mk_data_format ()
+  let cover_elt_plan_opt : Lib.Cover_elt_plan.t option Fs.data_format = Fs.mk_data_format ()
+  let package_report : Data.Package_report.t Fs.data_format = Fs.mk_data_format ()
+  let pkg_set : PkgSet.t Fs.data_format = Fs.mk_data_format ()
 end
 
 (* NOTE: this is not a recursive definition; the 'rec'/'and' are used to write
