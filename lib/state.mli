@@ -15,7 +15,7 @@ val read : t -> ('a, _) file path -> 'a
 val write : t -> ('a, _) file path -> 'a -> unit
 val append : t -> (_, 'b append) file path -> 'b -> unit
 
-val mkdir : t -> _ dir path -> unit
+val mkdir : t -> ?init:(unit -> unit) -> _ dir path -> unit
 val commit : t -> ?msg:string -> git dir path -> unit
 
 val exists : t -> _ path -> bool

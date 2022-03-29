@@ -185,17 +185,9 @@ module Make (Fs : Spec) = struct
       end
     | Some { git = false } | None -> ()
 
-  let load ~root =
+  let check_and_autoinit (path: string) (tree: fstree) =
     (* check that the filesystem corresponds to the provided schema, creating
-       directories/files with default values if needed. We then work with the
-       assumption that this property stays true for as long as we have hold of
-       the database handle. In other words, we assume that:
-
-       - there are no concurrent changes happening to the filesystem (while
-       marracheck is running);
-
-       - the filesystem is not updated by other means (without going through the
-       API) in a way that makes it inconsistent. *)
+       directories/files with default values if needed. *)
     let rec loop (path: string) (tree: fstree) =
       match tree with
       | StaticDir { contents; cap } ->
@@ -223,7 +215,19 @@ module Make (Fs : Spec) = struct
         else if Sys.is_directory path then
           fatal "%s exists but is not a file" path
     in
-    loop root Fs.schema;
+    loop path tree
+
+  let load ~root =
+    (* After the initial autoinit, we work under the assumption that this
+       property stays true for as long as we have hold of the database handle.
+       In other words, we assume that:
+
+       - there are no concurrent changes happening to the filesystem (while
+       marracheck is running);
+
+       - the filesystem is not updated by other means (without going through the
+       API) in a way that makes it inconsistent. *)
+    check_and_autoinit root Fs.schema;
     { root }
 
   type 'k path_desc =
@@ -350,19 +354,22 @@ module Make (Fs : Spec) = struct
     let msg = if msg = "" then "-" else msg in
     let open OpamProcess in
     Job.of_list [
-      command ~dir:dirname "git" [ "add"; "*"; ];
+      command ~dir:dirname "git" [ "add"; "*" ];
       command ~dir:dirname "git" [ "commit"; "-a"; "--allow-empty"; "-m"; msg ];
     ]
     |> Job.run
     |> OpamStd.Option.iter (fun (cmd, res) -> must_succeed cmd res)
 
-  let mkdir db (path, _desc) =
+  let mkdir db ?(init = fun () -> ()) (path, _desc) =
     let tree = subtree path Fs.schema in
     let dirname = string_of_path db.root path in
-    match tree with
+    begin match tree with
     | ExtDir -> fsmkdir dirname
     | StaticDir { cap; _ } | DynDir { cap; _ } -> fsmkdir ~cap dirname
     | _ -> raise (Illegal_path path)
+    end;
+    init ();
+    check_and_autoinit (string_of_path db.root path) tree
 
   let exists db (path, _) =
     Sys.file_exists (string_of_path db.root path)

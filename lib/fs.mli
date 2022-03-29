@@ -1,5 +1,9 @@
 open Utils
 
+(* Generic API for accessing (possibly serialized) data stored on the filesystem.
+   For the API specific to the marracheck on-disk data, see the [State] module.
+*)
+
 type _ data_format
 val mk_data_format : unit -> 'a data_format
 
@@ -50,7 +54,11 @@ val appendfile_json :
   of_json:(Json.t -> 'a) -> to_json:('a -> Json.t) ->
   fstree
 
-(* Used as phantom types; the constructors are never used *)
+(* These types are used below in [Make.path_desc] as phantom types to describe
+   the destination of a path in the filesystem.
+
+   The constructors (Plain__, etc) are never used to construct values, they are
+   only useful to help with GADT typechecking. *)
 type plain = Plain__
 type 'a append = Append__
 type ('a, 'k) file = File__
@@ -81,7 +89,7 @@ module Make (Fs : Spec) : sig
   val write : t -> ('a, _) file path -> 'a -> unit
   val append : t -> (_, 'b append) file path -> 'b -> unit
 
-  val mkdir : t -> _ dir path -> unit
+  val mkdir : t -> ?init:(unit -> unit) -> _ dir path -> unit
   val commit : t -> ?msg:string -> git dir path -> unit
 
   val exists : t -> _ path -> bool

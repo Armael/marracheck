@@ -478,25 +478,12 @@ let recover_switch_state
     log "Initialize a fresh cover state";
     (* This initializes a fresh cover_state repository; it contains
        no data at this point *)
-    State.(mkdir st @@ cover_state_path ~switch);
-    (* Initialize the directory. *)
-    (* NOTE: we need to provide the timestamp explicitly, but for the rest we
-       could have an [autoinit] function that would initialize the rest using
-       the default values from the schema.
-
-       Alternatively, we could make it so [State.read] auto-creates files
-       using default values when trying to read from a file that does not
-       exist (currently this auto-creation is only done once by [State.load]).
-       However this becomes a bit tricky if one needs to do it in depth and
-       create directories...
-
-       For now it seems simpler to require that when one creates a directory,
-       one manually initializes it so that it satisfies the schema. *)
-    State.(write st @@ timestamp_path ~switch) repo_timestamp;
-    State.(write st @@ past_elts_path ~switch) [];
-    State.(write st @@ cur_plan_path ~switch) None;
-    State.(write st @@ cur_report_path ~switch) [];
-    State.(write st @@ uninst_path ~switch) PkgSet.empty;
+    State.mkdir st (State.cover_state_path ~switch) ~init:(fun () ->
+      (* Initialize the directory. We need to provide the timestamp
+         explicitly; the other files will be generated automatically from
+         their default value following the schema. *)
+      State.(write st @@ timestamp_path ~switch) repo_timestamp
+    );
     State.(commit st ~msg:"Initial cover state" @@ cover_state_path ~switch)
   end
 
