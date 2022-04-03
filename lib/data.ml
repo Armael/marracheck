@@ -138,3 +138,14 @@ module Uninst = struct
 
   let to_json set = `O [ "uninst", PkgSet.to_json set ]
 end
+
+module Allpkgs = struct
+  let of_json = function
+    | `O [] -> None
+    | `O [("allpkgs", j)] -> Some (get_opt (PkgSet.of_json j))
+    | j -> Json.parse_error (Json.value j) "Allpkgs.of_json: invalid format"
+
+  let to_json = function
+    | None -> `O []
+    | Some set -> `O [("allpkgs", PkgSet.to_json set)]
+end

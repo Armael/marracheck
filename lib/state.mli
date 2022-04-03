@@ -37,6 +37,7 @@ val f : workdir:string -> _ file path -> OpamTypes.filename
 val cache_path : plain dir path
 val opamroot_path : plain dir path
 (* switch_state-local paths *)
+val switch_state_path : switch:string -> plain dir path
 val past_timestamps_path : switch:string -> plain dir path
 val cover_state_path : switch:string -> git dir path
 val timestamp_path : switch:string -> (string, plain) file path
@@ -44,6 +45,7 @@ val past_elts_path : switch:string -> (Data.Cover.t, plain) file path
 val cur_plan_path : switch:string -> (Data.Cover_elt_plan.t option, plain) file path
 val cur_report_path : switch:string -> (Data.Package_report.t list, Data.Package_report.t append) file path
 val uninst_path : switch:string -> (PkgSet.t, plain) file path
+val allpkgs_path : switch:string -> (PkgSet.t option, plain) file path
 
 (* higher-level queries that aggregate or further process information from the
    files *)

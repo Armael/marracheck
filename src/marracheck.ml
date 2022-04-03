@@ -117,16 +117,21 @@ let remove_from_universe (u: universe) (to_remove : PkgSet.t): universe =
   }
 
 (* Assumes a clean universe *)
-let compute_package_selection (u: universe)
-  : package_selection -> PkgSet.t
+let compute_package_selection
+    ~st ~switch (u: universe) (sel: package_selection): PkgSet.t
   =
-  function
+  match sel with
   | `All ->
-    log "Computing the set of all installable packages...";
-  (* NB: this is somewhat expensive to compute *)
-    let allpkgs = OpamSolver.installable u in
-    log "Done (there are %d installable packages)" (PkgSet.cardinal allpkgs);
-    allpkgs
+    (* somewhat expensive to compute, and thus cached in the on-disk state *)
+    begin match State.(read st (allpkgs_path ~switch)) with
+      | Some allpkgs -> allpkgs
+      | None ->
+        log "Computing the set of all installable packages for switch %s..." switch;
+        let allpkgs = OpamSolver.installable u in
+        State.(write st (allpkgs_path ~switch)) (Some allpkgs);
+        State.(commit st (cover_state_path ~switch) ~msg:"Computed allpkgs.json");
+        allpkgs
+    end
 
   | `Packages pkgs ->
     OpamPackage.Set.of_list pkgs
@@ -423,7 +428,7 @@ let recover_opam_switch_for_plan ~switch ~universe ~compiler plan =
     end
 
 (* Archive the current cover element if necessary *)
-let recover_cover_state ~(selection : PkgSet.t) ~st ~switch : bool (* has_changed *) =
+let recover_cover_state ~(selection : PkgSet.t) ~st ~switch =
   let already_built = State.resolved_packages st ~switch in
   let selection_already_built =
     PkgSet.inter already_built selection in
@@ -436,7 +441,7 @@ let recover_cover_state ~(selection : PkgSet.t) ~st ~switch : bool (* has_change
     (PkgSet.cardinal selection_remaining);
 
   match State.(read st @@ cur_plan_path ~switch) with
-  | None -> false
+  | None -> ()
   | Some plan ->
     (* A cover element was already being built.
 
@@ -447,8 +452,7 @@ let recover_cover_state ~(selection : PkgSet.t) ~st ~switch : bool (* has_change
     let current_todo = State.nonbuilt_useful_packages st ~switch plan in
     if PkgSet.subset current_todo selection
     then begin
-      log "Reusing the current cover element";
-      false
+      log "Reusing the current cover element"
     end else begin
       log "Archiving the current cover element";
       (* NB: here we archive the current element even though it has only
@@ -456,27 +460,17 @@ let recover_cover_state ~(selection : PkgSet.t) ~st ~switch : bool (* has_change
          consider cover elements only as the output of the solver for
          co-installable packages, not as the build log). *)
       let _elt = State.archive_cur_elt st ~switch in
-      true
+      State.(commit st (cover_state_path ~switch) ~msg:"Update cover state")
     end
 
 let recover_switch_state
     ~(repo_url: OpamUrl.t)
-    ~(selection: PkgSet.t)
     ~st ~switch
   =
   let repo_timestamp = get_repo_timestamp repo_url in
   if State.(exists st @@ cover_state_path ~switch)
   && State.(read st @@ timestamp_path ~switch) = repo_timestamp
-  then begin
-    log "Found an existing cover state for the current timestamp";
-    let has_changed =
-      recover_cover_state ~selection ~st ~switch in
-    if not has_changed then
-      (* Avoid polluting the git history with identity commits *)
-      ()
-    else
-      State.(commit st (cover_state_path ~switch) ~msg:"Update cover state")
-  end else begin
+  then () else begin
     if State.(exists st @@ cover_state_path ~switch) then begin
       (* There is an existing cover_state, but its timestamp does not match
          the one of the repository. Retire the cover_state and recreate it. *)
@@ -688,6 +682,9 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
      Installed packages in the switch include at least our compiler and
      related base packages (there can also be other packages). *)
 
+  (* (re)initialize the on-disk state for this switch *)
+  recover_switch_state ~st ~repo_url ~switch;
+
   (* TODO: do we want to filter the universe to exclude packages that we know
      are broken? *)
   let universe = switch_universe () |> prepare_universe in
@@ -699,11 +696,12 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
     )
   in
 
-  let selection_packages = compute_package_selection universe package_selection in
+  let selection_packages =
+    compute_package_selection ~st ~switch universe package_selection in
   log "User package selection includes %d packages"
     (PkgSet.cardinal selection_packages);
 
-  recover_switch_state ~st ~repo_url ~selection:selection_packages ~switch;
+  recover_cover_state ~selection:selection_packages ~st ~switch;
 
   let universe, to_install =
     let broken = State.broken_packages st ~switch in

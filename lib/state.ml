@@ -8,6 +8,7 @@ module Fmt = struct
   let cover_elt_plan_opt : Lib.Cover_elt_plan.t option Fs.data_format = Fs.mk_data_format ()
   let package_report : Data.Package_report.t Fs.data_format = Fs.mk_data_format ()
   let pkg_set : PkgSet.t Fs.data_format = Fs.mk_data_format ()
+  let pkg_set_opt : PkgSet.t option Fs.data_format = Fs.mk_data_format ()
 end
 
 (* NOTE: this is not a recursive definition; the 'rec'/'and' are used to write
@@ -64,6 +65,11 @@ and cover_state =
         ~of_json:Data.Uninst.of_json
         ~to_json:Data.Uninst.to_json
       ;
+      "allpkgs.json",
+      Fs.file_json ~format:Fmt.pkg_set_opt
+        ~default:(Some None)
+        ~of_json:Data.Allpkgs.of_json
+        ~to_json:Data.Allpkgs.to_json
     ]
   }
 
@@ -106,6 +112,9 @@ let cache_path =
 let opamroot_path =
   Db.path DirPath ["opamroot"]
 
+let switch_state_path ~switch =
+  Db.path DirPath ["switches"; switch]
+
 let past_timestamps_path ~switch =
   Db.path DirPath ["switches"; switch; "past_timestamps"]
 
@@ -131,6 +140,10 @@ let cur_report_path ~switch =
 let uninst_path ~switch =
   Db.path (FilePath Fmt.pkg_set)
     ["switches"; switch; "cover_state.git"; "uninst.json"]
+
+let allpkgs_path ~switch =
+  Db.path (FilePath Fmt.pkg_set_opt)
+    ["switches"; switch; "cover_state.git"; "allpkgs.json"]
 
 (* higher-level queries *)
 
