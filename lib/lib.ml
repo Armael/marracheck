@@ -252,14 +252,14 @@ let make_request_maxsat ~cycles ~universe ~to_install =
         List.map (fun cycle ->
           List.map (fun action ->
             let pkg = OpamTypesBase.action_contents action in
-            OpamCudf.cudf2opam pkg
+            List.map OpamCudf.cudf2opam pkg
           ) cycle
         ) cycles
       in
       let hash = Hashtbl.hash cycles in
       let dbg_filename = Printf.sprintf "marracheck-cycles-%d.json" hash in
       CCIO.with_out dbg_filename (fun cout ->
-        Json.to_channel cout (Json.list (Json.list OpamPackage.to_json) cycles));
+        Json.to_channel cout (Json.list (Json.list (Json.list OpamPackage.to_json)) cycles));
       fatal "The custom solver produced a cyclic solution.\n\
              This is not supposed to happen, since we worked to make cycles illegal upfront.\n\
              A file '%s' has been written in the current working directory with some information.\n\

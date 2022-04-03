@@ -8,7 +8,7 @@ let log fmt = Printf.eprintf (fmt ^^ "\n%!")
 
 let get_universe switch =
   let u = OpamSwitchState.universe switch
-      ~requested:OpamPackage.Name.Set.empty
+      ~requested:OpamPackage.Set.empty
       OpamTypes.Query (* Louis: for historical reasons, should not matter nowadays *)
   in
   { u with u_installed = u.u_base; }

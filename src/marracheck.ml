@@ -142,7 +142,7 @@ let compute_package_selection (u: universe)
     pkgs
 
 let universe ~sw =
-  OpamSwitchState.universe sw ~requested:OpamPackage.Name.Set.empty
+  OpamSwitchState.universe sw ~requested:OpamPackage.Set.empty
     OpamTypes.Query (* for historical reasons; should not matter *)
 
 let switch_universe () =
@@ -227,17 +227,23 @@ let build_log_of_exn exn =
   | e ->
     ["======= Exception ======="; Printexc.to_string e]
 
-let process_package_result
+let process_action_result
     (action : package action)
     (action_result : (PkgSet.t * PkgSet.t, OpamSolver.Action.Set.t) action_result)
-  : Data.Package_report.t option
+  : Data.Package_report.t list
   =
+  (* Because of fetch actions, the result of one action might be relevant for
+     several packages.
+
+     (one fetch can be used for several packages, hence if it fails then this
+     makes the build of several packages fail and we thus issue several
+     corresponding packages reports.) *)
   let module R = Data.Package_report in
   let error exn cause = R.Error { log = build_log_of_exn exn; cause } in
   match action with
   | (`Change _ | `Reinstall _ | `Remove _) ->
     assert false
-  | (`Build package | `Fetch package) as action ->
+  | (`Build _ | `Fetch _) as action ->
     (* Build and Fetch are dependencies of Install.
 
        If they fail, Install will be aborted, we record them as failures.
@@ -246,18 +252,22 @@ let process_package_result
 
        We record all aborts, potentially several for each package.
     *)
-    let report = match action_result with
+    let packages = match action with
+      | `Build pkg -> [pkg]
+      | `Fetch pkgs -> pkgs
+    in
+    begin match action_result with
       | `Aborted deps ->
-        Some (R.Aborted { deps })
+        List.map (fun pkg -> (pkg, R.Aborted { deps })) packages
       | `Successful _ ->
-        None
+        []
       | `Exception exn ->
         let cause = match action with
           | `Build _ -> `Build
           | `Fetch _ -> `Fetch
         in
-        Some (error exn cause)
-    in report |> Option.map (fun report -> package, report)
+        List.map (fun pkg -> (pkg, error exn cause)) packages
+    end
   | `Install package ->
     let report = match action_result with
       | `Aborted deps ->
@@ -270,7 +280,7 @@ let process_package_result
         let log = (* FIXME *)
           ["TODO"] in
         Success { log; changes }
-    in Some (package, report)
+    in [package, report]
 
 let retire_cover_state ~st ~switch
   =
@@ -567,12 +577,16 @@ let build
 
     (* The cover element can now be built in the current opam switch *)
     let update_cover_state package_action action_result =
-      match process_package_result package_action action_result with
-      | None -> ()
-      | Some report_item ->
-        State.(append st @@ cur_report_path ~switch) report_item;
-        let msg = Printf.sprintf "New report for package %s"
-            (OpamPackage.to_string (fst report_item)) in
+      match process_action_result package_action action_result with
+      | [] -> ()
+      | report_items ->
+        List.iter State.(append st @@ cur_report_path ~switch) report_items;
+        let msg =
+          Printf.sprintf "New report for package%s %s"
+            (if List.length report_items > 1 then "s" else "")
+            (String.concat ", "
+               (List.map (fun (p, _) -> OpamPackage.to_string p) report_items))
+        in
         State.(commit st ~msg @@ cover_state_path ~switch);
     in
 
@@ -582,7 +596,7 @@ let build
       let (_sw, res) =
         OpamSolution.apply sw
           ~ask:false
-          ~requested:OpamPackage.Name.Set.empty
+          ~requested:OpamPackage.Set.empty
           ~assume_built:false
           ~report_action_result:update_cover_state
           plan.Cover_elt_plan.solution
