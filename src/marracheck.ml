@@ -467,23 +467,25 @@ let recover_switch_state
     else
       State.(commit st (cover_state_path ~switch) ~msg:"Update cover state")
   end else begin
-    (* Start over with a fresh cover state for the current timestamp *)
     if State.(exists st @@ cover_state_path ~switch) then begin
-      log "Existing cover state is for an old repo timestamp";
       (* There is an existing cover_state, but its timestamp does not match
-         the one of the repository. Retire the cover_state
-         before creating a new one *)
-      retire_cover_state ~st ~switch;
+         the one of the repository. Retire the cover_state and recreate it. *)
+      log "Existing cover state is for an old repo timestamp.";
+      log "Create a fresh cover state for the current timestamp.";
+      State.recreate st (State.cover_state_path ~switch)
+        ~finalize:(fun () -> retire_cover_state ~st ~switch)
+        ~init:(fun () ->
+        (* Initialize the directory. We need to provide the timestamp
+           explicitly; the other files will be generated automatically from
+           their default value following the schema. *)
+          State.(write st @@ timestamp_path ~switch) repo_timestamp)
+    end else begin
+      (* Create a fresh cover_state repository *)
+      log "Initialize a fresh cover state";
+      State.mkdir st (State.cover_state_path ~switch) ~init:(fun () ->
+        (* other files will be generated automatically from default values *)
+        State.(write st @@ timestamp_path ~switch) repo_timestamp)
     end;
-    log "Initialize a fresh cover state";
-    (* This initializes a fresh cover_state repository; it contains
-       no data at this point *)
-    State.mkdir st (State.cover_state_path ~switch) ~init:(fun () ->
-      (* Initialize the directory. We need to provide the timestamp
-         explicitly; the other files will be generated automatically from
-         their default value following the schema. *)
-      State.(write st @@ timestamp_path ~switch) repo_timestamp
-    );
     State.(commit st ~msg:"Initial cover state" @@ cover_state_path ~switch)
   end
 

@@ -1,4 +1,4 @@
 (library
   (name marracheck_lib)
   (libraries opam-state opam-solver opam-client
-             oseq containers yojson ezjsonm lwt.unix))
+             oseq containers yojson ezjsonm lwt.unix dmap))

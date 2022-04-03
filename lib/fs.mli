@@ -57,11 +57,11 @@ val appendfile_json :
 (* These types are used below in [Make.path_desc] as phantom types to describe
    the destination of a path in the filesystem.
 
-   The constructors (Plain__, etc) are never used to construct values, they are
-   only useful to help with GADT typechecking. *)
+   The user never needs to use the constructors (Plain__, etc), they are
+   only exposed to help with GADT typechecking. *)
 type plain = Plain__
 type 'a append = Append__
-type ('a, 'k) file = File__
+type ('a, 'k) file = File__ of 'a
 type git = Git__
 type 'k dir = Dir__
 
@@ -91,6 +91,12 @@ module Make (Fs : Spec) : sig
 
   val mkdir : t -> ?init:(unit -> unit) -> _ dir path -> unit
   val commit : t -> ?msg:string -> git dir path -> unit
+  val recreate : t ->
+    ?finalize:(unit -> unit) ->
+    ?init:(unit -> unit) ->
+    _ dir path ->
+    unit
 
+  val remove : t -> _ path -> unit
   val exists : t -> _ path -> bool
 end

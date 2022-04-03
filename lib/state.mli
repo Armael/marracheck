@@ -17,7 +17,13 @@ val append : t -> (_, 'b append) file path -> 'b -> unit
 
 val mkdir : t -> ?init:(unit -> unit) -> _ dir path -> unit
 val commit : t -> ?msg:string -> git dir path -> unit
+val recreate : t ->
+  ?finalize:(unit -> unit) ->
+  ?init:(unit -> unit) ->
+  _ dir path ->
+  unit
 
+val remove : t -> _ path -> unit
 val exists : t -> _ path -> bool
 
 (* converting paths to full filesystem paths *)

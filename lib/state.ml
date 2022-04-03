@@ -85,7 +85,9 @@ let read = Db.read
 let write = Db.write
 let append = Db.append
 let commit = Db.commit
+let recreate = Db.recreate
 let mkdir = Db.mkdir
+let remove = Db.remove
 let exists = Db.exists
 
 let p ~workdir path =

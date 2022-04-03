@@ -144,7 +144,7 @@ let appendfile_json ~format
 
 type plain = Plain__
 type 'a append = Append__
-type ('a, 'k) file = File__
+type ('a, 'k) file = File__ of 'a
 type git = Git__
 type 'k dir = Dir__
 
@@ -153,8 +153,57 @@ module type Spec = sig
 end
 
 module Make (Fs : Spec) = struct
+  type 'k path_desc =
+    | FilePath : 'a data_format -> ('a, plain) file path_desc
+    | AppendFilePath : 'a data_format -> ('a list, 'a append) file path_desc
+    | DirPath : plain dir path_desc
+    | GitDirPath : git dir path_desc
+
+  let path_desc_eq (type k1 k2) (d1: k1 path_desc) (d2: k2 path_desc): (k1, k2) eq option =
+    match d1, d2 with
+    | FilePath df1, FilePath df2 ->
+      begin match data_format_iseq df1 df2 with
+        | Some Eq -> Some Eq
+        | None -> None
+      end
+    | AppendFilePath df1, AppendFilePath df2 ->
+      begin match data_format_iseq df1 df2 with
+        | Some Eq -> Some Eq
+        | None -> None
+      end
+    | DirPath, DirPath -> Some Eq
+    | GitDirPath, GitDirPath -> Some Eq
+    | _ -> None
+
+  type 'k path = string list * 'k path_desc
+
+  exception Illegal_path of string list
+  let () =
+    Printexc.register_printer (fun exn ->
+      match exn with
+      | Illegal_path ps ->
+        Some (
+          Printf.sprintf "Illegal_path(%s)"
+            (List.fold_left Filename.concat "" ps)
+        )
+      | _ -> None
+    )
+
+  module FsCache = Dmap.Make (struct
+      type 'a t = 'a path
+      let compare : type a b. a path -> b path -> (a, b) Dmap.cmp =
+        fun (p1, d1) (p2, d2) ->
+        let cmp = List.compare String.compare p1 p2 in
+        if cmp < 0 then Dmap.Lt
+        else if cmp > 0 then Dmap.Gt
+        else match path_desc_eq d1 d2 with
+          | Some Eq -> Dmap.Eq
+          | None -> assert false (* equal paths must have equal kind *)
+    end)
+
   type t = {
     root : string;
+    mutable cache : FsCache.t;
   }
 
   let get_root db = db.root
@@ -228,27 +277,7 @@ module Make (Fs : Spec) = struct
        - the filesystem is not updated by other means (without going through the
        API) in a way that makes it inconsistent. *)
     check_and_autoinit root Fs.schema;
-    { root }
-
-  type 'k path_desc =
-    | FilePath : 'a data_format -> ('a, plain) file path_desc
-    | AppendFilePath : 'a data_format -> ('a list, 'a append) file path_desc
-    | DirPath : plain dir path_desc
-    | GitDirPath : git dir path_desc
-
-  type 'k path = string list * 'k path_desc
-
-  exception Illegal_path of string list
-  let () =
-    Printexc.register_printer (fun exn ->
-      match exn with
-      | Illegal_path ps ->
-        Some (
-          Printf.sprintf "Illegal_path(%s)"
-            (List.fold_left Filename.concat "" ps)
-        )
-      | _ -> None
-    )
+    { root; cache = FsCache.empty }
 
   let subtree path (tree: fstree) : fstree =
     let rec loop subpath tree =
@@ -310,43 +339,59 @@ module Make (Fs : Spec) = struct
     fun db (path, desc) ->
     let tree = subtree path Fs.schema in
     check_path_exists db.root path;
-    let filename = string_of_path db.root path in
-    assert (Sys.file_exists filename && not (Sys.is_directory filename));
-    match tree, desc with
-    | File { format; read; _ }, FilePath pformat ->
-      (match read ~filename with
-       | Result.Ok x -> cast_data format pformat x
-       | Result.Error msg -> fatal "When reading %s: %s" filename msg)
-    | AppendFile { format; read_all; _ }, AppendFilePath pformat ->
-      begin match read_all ~filename with
-        | Result.Ok x -> cast_data_list format pformat x
-        | Result.Error msg -> fatal "When reading %s: %s" filename msg
-      end
-    | _ ->
-      raise (Illegal_path path)
+    (* check whether the file contents are in the cache *)
+    match FsCache.find_opt (path, desc) db.cache with
+    | Some (File__ data) -> data
+    | None ->
+      (* if not, read the file and cache the data *)
+      let filename = string_of_path db.root path in
+      assert (Sys.file_exists filename && not (Sys.is_directory filename));
+      match tree, desc with
+      | File { format; read; _ }, FilePath pformat ->
+        let data =
+          match read ~filename with
+          | Result.Ok x -> cast_data format pformat x
+          | Result.Error msg -> fatal "When reading %s: %s" filename msg in
+        db.cache <- FsCache.add (path, desc) (File__ data) db.cache;
+        data
+      | AppendFile { format; read_all; _ }, AppendFilePath pformat ->
+        let data =
+          match read_all ~filename with
+          | Result.Ok x -> cast_data_list format pformat x
+          | Result.Error msg -> fatal "When reading %s: %s" filename msg in
+        db.cache <- FsCache.add (path, desc) (File__ data) db.cache;
+        data
+      | _ ->
+        raise (Illegal_path path)
 
   let write : type a b. t -> (a, b) file path -> a -> unit =
     fun db (path, desc) v ->
     let tree = subtree path Fs.schema in
     let filename = string_of_path db.root path in
-    match tree, desc with
+    begin match tree, desc with
     | File { format; write; _ }, FilePath pformat ->
       write ~filename (cast_data pformat format v)
     | AppendFile { format; write_all; _ }, AppendFilePath pformat ->
       write_all ~filename (cast_data_list pformat format v)
     | _ ->
       raise (Illegal_path path)
+    end;
+    (* remove the outdated cache entry, if any *)
+    db.cache <- FsCache.remove (path, desc) db.cache
 
   let append : type a b. t -> (a, b append) file path -> b -> unit =
     fun db (path, desc) v ->
     let tree = subtree path Fs.schema in
     check_path_exists db.root path;
     let filename = string_of_path db.root path in
-    match tree, desc with
+    begin match tree, desc with
     | AppendFile { format; append; _ }, AppendFilePath pformat ->
       append ~filename (cast_data pformat format v)
     | _ ->
       raise (Illegal_path path)
+    end;
+    (* invalidate any outdated cache entry *)
+    db.cache <- FsCache.remove (path, desc) db.cache
 
   let commit db ?(msg = "-") (path, _) =
     check_path_exists db.root path;
@@ -369,7 +414,63 @@ module Make (Fs : Spec) = struct
     | _ -> raise (Illegal_path path)
     end;
     init ();
-    check_and_autoinit (string_of_path db.root path) tree
+    (* run [check_and_autoinit] at the root of the filesystem, as [fsmkdir]
+       can be called to create several nested subdirs, and thus we may need to
+       check parent directories of [path] as well *)
+    check_and_autoinit db.root Fs.schema
+
+  let rec is_removable (tree: fstree) =
+    match tree with
+    | StaticDir { contents; _ } ->
+      List.for_all (fun (_, subtree) ->
+        is_removable subtree
+      ) contents
+    | DynDir _ (* A [DynDir] with no entries is always valid *)
+    | ExtDir
+    | File { default = Some _; _ }
+    | AppendFile _ ->
+      true
+    | File { default = None; _ } ->
+      false
+
+  (* remove cache entries for [path] and its children (if it is a directory) *)
+  let invalidate_cache_at db path =
+    let rec is_prefix p1 p2 =
+      match p1, p2 with
+      | [], _ -> true
+      | _::_, [] -> false
+      | x::xs, y::ys -> x = y && is_prefix xs ys
+    in
+    db.cache <- FsCache.filter { fun1 = (fun (type a) (p, _: a path) _ ->
+      not (is_prefix path p)
+    )} db.cache
+
+  let remove db (path, _) =
+    if path = [] then
+      fatal "Fs.remove: cannot remove the root path";
+    let parent = CCList.take (List.length path - 1) path in
+    let safe_to_remove =
+      is_removable (subtree path Fs.schema) ||
+      match subtree parent Fs.schema with
+      | DynDir _ -> true (* safe to remove an entry from a DynDir *)
+      | _ -> false
+    in
+    let path_s = string_of_path db.root path in
+    if not safe_to_remove then
+      fatal "Fs.remove: cannot remove %s" path_s;
+    OpamSystem.remove path_s;
+    invalidate_cache_at db path
+
+  let recreate : type d.
+    t -> ?finalize:(unit -> unit) -> ?init:(unit -> unit) ->  d dir path -> unit
+    =
+    fun db ?(finalize = fun () -> ()) ?(init = fun () -> ()) (path, desc) ->
+    let dirname = string_of_path db.root path in
+    check_path_exists db.root path;
+    finalize ();
+    OpamSystem.remove_dir dirname;
+    invalidate_cache_at db path;
+    mkdir db ~init (path, desc)
 
   let exists db (path, _) =
     Sys.file_exists (string_of_path db.root path)
