@@ -498,7 +498,6 @@ let build
     ~(switch : switch)
     ~(compiler : package)
     ~(universe : universe)
-    ~(universe_cycles : PkgSet.t list list)
     ~(to_install: PkgSet.t)
   =
   let switch_o = switch in
@@ -546,7 +545,7 @@ let build
       log "Computing the next element...";
       let elt, remaining =
         Cover_elt_plan.compute
-          ~make_request:(Lib.make_request_maxsat ~cycles:universe_cycles)
+          ~make_request:Lib.make_request_maxsat
           ~universe ~to_install in
       if PkgSet.is_empty elt.useful then begin
         assert (PkgSet.equal to_install remaining);
@@ -685,16 +684,11 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   (* (re)initialize the on-disk state for this switch *)
   recover_switch_state ~st ~repo_url ~switch;
 
+  log "Compute switch universe";
+
   (* TODO: do we want to filter the universe to exclude packages that we know
      are broken? *)
   let universe = switch_universe () |> prepare_universe in
-  let universe_cycles =
-      log "Computing cycles in the packages universe...";
-      let universe_cycles = Lib.compute_universe_cycles universe in
-      log "Done";
-      universe_cycles
-    )
-  in
 
   let selection_packages =
     compute_package_selection ~st ~switch universe package_selection in
@@ -710,7 +704,7 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
     PkgSet.diff selection_packages resolved
   in
 
-  build ~st ~switch:switch_o ~compiler ~universe ~universe_cycles ~to_install;
+  build ~st ~switch:switch_o ~compiler ~universe ~to_install;
   log "Done";
   ()
 

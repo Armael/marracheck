@@ -10,6 +10,8 @@ let is_present () = true
 
 let command_name = None
 
+let preemptive_check = false
+
 (* https://github.com/sbjoshi/Open-WBO-Inc *)
 let solver_path = ref "open-wbo-inc_release"
 
@@ -34,50 +36,55 @@ let xrmap f l =
 
 open OpamStd.Option.Op
 
-let def_packages
-    (cycles : Cudf.package list list list)
-    (_preamble, universe, _request) :
-  (int list, [`RW]) Vec.t *
-  (Cudf.package -> int option) *
-  (int -> Cudf.package) *
-  int
-  =
-  let pkg_table : (Cudf.package, int) Hashtbl.t = Hashtbl.create 4000 in
-  let pkg_rev_table : (int, Cudf.package) Hashtbl.t = Hashtbl.create 4000 in
-  let pkg_id p = Hashtbl.find_opt pkg_table p in
-  let pkg_of_id id = Hashtbl.find pkg_rev_table id in
-  let pkg_id_exn p = match pkg_id p with Some x -> x | None -> raise Not_found in
-  let fresh_id = ref 1 in
-  let clauses = Vec.create () in
+type ctx = {
+  pkg_table : (Cudf.package, int) Hashtbl.t;
+  pkg_rev_table : (int, Cudf.package) Hashtbl.t;
+  mutable fresh_id : int;
+}
 
+let create_ctx () = {
+  pkg_table = Hashtbl.create 4000;
+  pkg_rev_table = Hashtbl.create 4000;
+  fresh_id = 1;
+}
+
+let pkg_id ctx p = Hashtbl.find_opt ctx.pkg_table p
+let pkg_of_id ctx id = Hashtbl.find ctx.pkg_rev_table id
+let pkg_id_exn ctx p = match pkg_id ctx p with Some x -> x | None -> raise Not_found
+
+let def_packages
+    (ctx: ctx)
+    (clauses: (int list, [`RW]) Vec.t)
+    (_preamble, universe, _request)
+  =
   Cudf.iter_packages (fun pkg ->
-    Hashtbl.add pkg_table pkg !fresh_id;
-    Hashtbl.add pkg_rev_table !fresh_id pkg;
-    incr fresh_id
+    Hashtbl.add ctx.pkg_table pkg ctx.fresh_id;
+    Hashtbl.add ctx.pkg_rev_table ctx.fresh_id pkg;
+    ctx.fresh_id <- ctx.fresh_id + 1
   ) universe;
 
   (* "keep" flags *)
   Cudf.iter_packages_by_name (fun _name pkgs ->
     let keep =
       match List.find (fun p -> p.Cudf.keep = `Keep_version) pkgs with
-      | p -> pkg_id p >>| fun x -> [x]
+      | p -> pkg_id ctx p >>| fun x -> [x]
       | exception Not_found ->
         if List.exists (fun p -> p.Cudf.keep = `Keep_package) pkgs then
-          xrmap pkg_id pkgs
+          xrmap (pkg_id ctx) pkgs
         else None
     in
     OpamStd.Option.iter (Vec.push clauses) keep
   ) universe;
 
   let expand_constraint pkg (name, constr) =
-    xrmap (fun p -> if Cudf.( =% ) pkg p then None else pkg_id p)
+    xrmap (fun p -> if Cudf.( =% ) pkg p then None else pkg_id ctx p)
       (Cudf.lookup_packages universe ~filter:constr name)
   in
 
   let implies x l = -x :: l in
 
   Cudf.iter_packages (fun pkg ->
-    let pid = pkg_id_exn pkg in
+    let pid = pkg_id_exn ctx pkg in
     (* depends *)
     List.iter (fun disj ->
       CCList.filter_map (expand_constraint pkg) disj |> List.flatten
@@ -93,40 +100,7 @@ let def_packages
         ) l
       )
     ) pkg.Cudf.conflicts;
-  ) universe;
-
-  (* exclude cycles *)
-  (* the boolean formula for excluding a cycle is:
-
-     ¬ (P1 /\ P2 /\ .. /\ Pn)
-     <=>
-     (¬P1 \/ ¬P2 \/ .. \/ ¬Pn)
-
-     where P1..Pn are in fact sets of packages, so disjunctions:
-
-     (¬(P11 \/ P12 \/ .. \/ P1m) \/ ... \/ ¬(Pn1 \/ .. \/ Pnm)
-     <=>
-     ((¬P11 /\ ¬P12 /\ .. /\ ¬P1m) \/ .. \/ (¬Pn1 /\ .. /\ ¬Pnm))
-
-     i.e. a formula in disjunctive normal form (DNF).
-
-     We therefore need to turn it into CNF...
-  *)
-  let rec cnf = function
-    | [] -> [[]]
-    | cycle :: cycles ->
-      let cycles' = cnf cycles in
-      CCList.flat_map (fun pkg ->
-        List.map (fun cl -> pkg :: cl) cycles'
-      ) cycle
-  in
-  List.iter (fun cycle ->
-    List.iter (fun cl ->
-      Vec.push clauses (List.map (fun pkg -> - (pkg_id_exn pkg)) cl)
-    ) (cnf cycle);
-  ) cycles;
-
-  clauses, pkg_id, pkg_of_id, (!fresh_id - 1)
+  ) universe
 
 let read_pkg_property_value preamble property p =
   match property with
@@ -255,15 +229,18 @@ let call_solver ~time_budget pkg_of_id hard_clauses soft_clauses _max_id =
     log "Incorrect solver output";
     exit 1
 
-let inner_call ~time_budget ~cycles (preamble, universe, request as cudf) =
-  let hard_clauses, pkg_id, pkg_of_id, max_id = def_packages cycles cudf in
+let inner_call ~time_budget (preamble, universe, request as cudf) =
+  let ctx = create_ctx () in
+  let hard_clauses = Vec.create () in
   let soft_clauses = Vec.create () in
+
+  def_packages ctx hard_clauses cudf;
 
   let expand_constraint (name, constr) =
     match constr with
     | Some (`Eq, ver) ->
       let pkg = Cudf.lookup_package universe (name, ver) in
-      pkg_id pkg >>| (fun id -> pkg, id)
+      pkg_id ctx pkg >>| (fun id -> pkg, id)
     | _ -> assert false
   in
 
@@ -276,12 +253,12 @@ let inner_call ~time_budget ~cycles (preamble, universe, request as cudf) =
         Vec.push soft_clauses ([id], `Inverted weight)
       ) to_install;
 
-      for i = 1 to max_id do
+      for i = 1 to ctx.fresh_id - 1 do
         if not (OpamStd.IntSet.mem i to_install_s) then
           Vec.push soft_clauses ([-i], `Normal 1)
       done;
 
-      call_solver ~time_budget pkg_of_id hard_clauses soft_clauses max_id
+      call_solver ~time_budget (pkg_of_id ctx) hard_clauses soft_clauses (ctx.fresh_id - 1)
     )
     |> CCOption.get_lazy (fun () ->
       log "(!!) nothing to install";
@@ -298,4 +275,4 @@ let call ~criteria ?timeout cudf =
     raise Exit
   ) timeout in
 
-  inner_call ~time_budget ~cycles:[](*!*) cudf
+  inner_call ~time_budget cudf

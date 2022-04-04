@@ -24,7 +24,6 @@ end
 val compute_universe_cycles : OpamTypes.universe -> OpamPackage.Set.t list list
 
 val make_request_maxsat :
-  cycles:OpamPackage.Set.t list list ->
   universe:OpamTypes.universe ->
   to_install:OpamPackage.Set.t ->
   OpamSolver.solution

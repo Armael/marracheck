@@ -84,184 +84,25 @@ let maxsat_time_budget nb_pkgs =
   maxsat_time_budget_per_pkg *. (float nb_pkgs)
 
 (****************)
-(* Copy-paste (after some simplification) from opamSolver.ml *)
 
-let constraint_to_cudf version_map name (op, v) =
-  let nv = OpamPackage.create name v in
-  try Some (op, OpamPackage.Map.find nv version_map)
-  with Not_found ->
-    (* Hopefully this doesn't happen according to the comment in opamSolver.ml
-    *)
-    (* FIXME This may happen if the user asks to install a version that does not
-       exist! *)
-    assert false
-
-let name_to_cudf name =
-  Dose_common.CudfAdd.encode (OpamPackage.Name.to_string name)
-
-let atom2cudf _universe (version_map : int OpamPackage.Map.t) (name,cstr) =
-  name_to_cudf name,
-  OpamStd.Option.Op.(cstr >>= constraint_to_cudf version_map name)
-
-let map_request f r =
-  let open OpamTypes in
-  let f = List.rev_map f in
-  { wish_install = f r.wish_install;
-    wish_remove  = f r.wish_remove;
-    wish_upgrade = f r.wish_upgrade;
-    wish_all = f r.wish_all;
-    criteria = r.criteria;
-    extra_attributes = r.extra_attributes; }
-
-let opamcudf_remove universe name constr =
-  let filter p =
-    p.Cudf.package <> name
-    || not (Cudf.version_matches p.Cudf.version constr) in
-  let packages = Cudf.get_packages ~filter universe in
-  Cudf.load_universe packages
-
-(** Special package used by Dose internally, should generally be filtered out *)
-let dose_dummy_request = Dose_algo.Depsolver.dummy_request.Cudf.package
-
-(****************)
-
-let make_request_maxsat ~cycles ~universe ~to_install =
+let make_request_maxsat ~universe ~to_install =
   let request = OpamSolver.request
       ~install:(OpamSolution.eq_atoms_of_packages to_install) () in
   let time_budget = maxsat_time_budget (card to_install) in
 
-  (* Morally: OpamCudf.resolve ~extern:true *)
-  let opamcudf_resolve ~cycles ~version_map univ req =
-    (* Translate cycles to the cudf level, using the version map *)
-    let cycles : Cudf.package list list list =
-      CCList.filter_map (fun cycle ->
-        let cudf_cycle =
-          List.map (fun pkgs ->
-            (* A set of pkgs represents a disjunction. It is ok to drop
-               non-existent packages; if the disjunction becomes vacuous, then we
-               can remove the cycle completely. *)
-            OpamPackage.Set.fold (fun pkg acc ->
-              match OpamPackage.Map.find_opt pkg version_map with
-              | None -> acc
-              | Some ver ->
-                let pkgname = OpamPackage.name_to_string pkg in
-                match Cudf.lookup_package univ (pkgname, ver) with
-                | exception Not_found -> acc
-                | cudf_pkg -> cudf_pkg :: acc
-            ) pkgs []
-          ) cycle in
-        if List.for_all ((<>) []) cudf_cycle then Some cudf_cycle else None
-      ) cycles
-    in
+  let cfg = OpamSolverConfig.(!r) in
+  OpamSolverConfig.update
+    ~solver:(lazy (module MaxSat))
+    ~solver_timeout:(Some time_budget)
+    ~preprocess:false
+    (* important! opam's preprocessing is incorrect for these kind of queries *)
+    ();
+  let solution = OpamSolver.resolve universe request in
+  OpamSolverConfig.(r := cfg);
 
-    let get_final_universe () =
-      let cudf_request = OpamCudf.to_cudf univ req in
-      if Cudf.universe_size univ > 0 then
-        let call_solver cudf = MaxSat.inner_call ~cycles ~time_budget cudf in
-        (* NOTE here by default opam does preprocess_cudf_request (in OpamCudf).
-           (can be disabled, but enabled by default) is it only an optimisation
-           we don't care about? *)
-        try
-          let r =
-            Dose_algo.Depsolver.check_request_using ~call_solver
-              ~explain:true cudf_request in
-          r
-        with
-        | Failure msg ->
-          raise (OpamCudf.Solver_failure ("Solver failure: " ^ msg))
-        | e ->
-          OpamStd.Exn.fatal e;
-          let msg =
-            Printf.sprintf "Solver failed: %s" (Printexc.to_string e) in
-          raise (OpamCudf.Solver_failure msg)
-      else
-        Dose_algo.Depsolver.Sat (None, Cudf.load_universe [])
-    in
-    match get_final_universe () with
-    | Dose_algo.Depsolver.Sat (_,u) ->
-      let u = opamcudf_remove u dose_dummy_request None in
-      Cudf.remove_package u OpamCudf.opam_invariant_package;
-      OpamTypes.Success u
-    | Dose_algo.Depsolver.Error str -> fatal "Solver error: %s" str
-    | Dose_algo.Depsolver.Unsat _ -> assert false
-  in
-
-  (* OpamSolver.opam_invariant_package *)
-  let opamsolver_opam_invariant_package version_map invariant =
-    let depends =
-      OpamFormula.to_atom_formula invariant
-      |> OpamFormula.map (fun at -> Atom (atom2cudf () version_map at))
-      |> OpamFormula.cnf_of_formula
-      |> OpamFormula.ands_to_list
-      |> List.map (OpamFormula.fold_right (fun acc x -> x::acc) [])
-    in {
-      Cudf.
-      package = OpamCudf.opam_invariant_package_name;
-      version = snd OpamCudf.opam_invariant_package;
-      depends;
-      conflicts = [];
-      provides = [];
-      installed = true;
-      was_installed = true;
-      keep = `Keep_version;
-      pkg_extra = [
-        OpamCudf.s_source, `String "SWITCH_INVARIANT";
-        OpamCudf.s_source_number, `String "NULL";
-      ];
-    }
-  in
-
-  (* Morally:
-     [OpamSolver.resolve univers ~orphans:OpamPackage.Set.empty req] *)
-  let open OpamTypes in
-  let open OpamPackage.Set.Op in
-  let all_packages = universe.u_available ++ universe.u_installed in
-  let version_map = OpamSolver.cudf_versions_map universe in
-  let univ_gen = OpamSolver.load_cudf_universe universe ~version_map all_packages in
-  let cudf_universe = univ_gen ~build:true ~post:true () in
-  let requested_names =
-    OpamPackage.Name.Set.of_list (List.map fst request.wish_all) in
-  let cudf_request = map_request (atom2cudf universe version_map) request in
-  let invariant_pkg =
-    opamsolver_opam_invariant_package version_map universe.u_invariant
-  in
-  let solution =
-    try
-      Cudf.add_package cudf_universe invariant_pkg;
-      let resp = opamcudf_resolve ~cycles ~version_map cudf_universe cudf_request in
-      Cudf.remove_package cudf_universe OpamCudf.opam_invariant_package;
-      OpamCudf.to_actions cudf_universe resp
-    with OpamCudf.Solver_failure msg ->
-      let bt = Printexc.get_raw_backtrace () in
-      OpamConsole.error "%s" msg;
-      Printexc.raise_with_backtrace
-        OpamStd.Sys.(Exit (get_exit_code `Solver_failure))
-        bt
-  in
   match solution with
-  | Conflicts _ -> fatal "conflicts in the solution"
-  | Success actions ->
-    let simple_universe = univ_gen ~depopts:true ~build:false ~post:false () in
-    let complete_universe = univ_gen ~depopts:true ~build:true ~post:false () in
-    try
-      let s = OpamCudf.atomic_actions ~simple_universe ~complete_universe actions in
-      OpamCudf.trim_actions cudf_universe requested_names s;
-      (Obj.magic s : OpamSolver.solution) (* XXXX *)
-    with OpamCudf.Cyclic_actions cycles ->
-      let cycles =
-        List.map (fun cycle ->
-          List.map (fun action ->
-            let pkg = OpamTypesBase.action_contents action in
-            List.map OpamCudf.cudf2opam pkg
-          ) cycle
-        ) cycles
-      in
-      let hash = Hashtbl.hash cycles in
-      let dbg_filename = Printf.sprintf "marracheck-cycles-%d.json" hash in
-      CCIO.with_out dbg_filename (fun cout ->
-        Json.to_channel cout (Json.list (Json.list (Json.list OpamPackage.to_json)) cycles));
-      fatal "The custom solver produced a cyclic solution.\n\
-             This is not supposed to happen, since we worked to make cycles illegal upfront.\n\
-             A file '%s' has been written in the current working directory with some information.\n\
-             Please report the issue to the marracheck bug tracker with the file attached."
-        dbg_filename
+  | Success solution -> solution
+  | Conflicts c ->
+    fatal "Conflicts in the solution produced by the custom solver:\n%s\n\
+           Make sure that the repository is cycle-free by running `opam admin check --cycles -i`"
+      (OpamCudf.string_of_conflicts universe.u_packages(*?*) (fun _ -> "")(*?*) c)

@@ -16,11 +16,11 @@ let get_universe switch =
 let card = OpamPackage.Set.cardinal
 
 (* elts_bound = -1 || elts_bound > 0 *)
-let compute_cover_batch ~cycles ~universe ~packages ~elts_bound =
+let compute_cover_batch ~universe ~packages ~elts_bound =
   let rec loop elts to_install elts_bound =
     let elt, remaining =
       Cover_elt_plan.compute
-        ~make_request:(make_request_maxsat ~cycles)
+        ~make_request:make_request_maxsat
         ~universe ~to_install
     in
     if OpamPackage.Set.is_empty elt.Cover_elt_plan.useful || elts_bound = 1 then begin
@@ -78,9 +78,8 @@ let () =
     log "all (installable) packages last version: %d"
       (card all_packages_last_version);
 
-    let universe_cycles = compute_universe_cycles u in
     let (elts, uninst) =
-      compute_cover_batch ~cycles:universe_cycles ~universe:u
+      compute_cover_batch ~universe:u
         ~packages:all_packages ~elts_bound:!elts_bound
     in
 
