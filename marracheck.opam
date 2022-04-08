@@ -20,10 +20,11 @@ depends: [
   "bos"
   "oseq"
   "containers" {>= "3.6"}
-  "cmdliner"
+  "cmdliner" {< "1.1.0"}
   "ezjsonm" {>= "1.1.0"}
   "yojson"
   "lwt"
+  "dmap"
 #  "z3" {>= "4.8.4"}
   "opam-file-format" {= "2.1.3"}
 #

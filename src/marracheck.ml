@@ -2,7 +2,6 @@ open Marracheck_lib
 open OpamTypes
 module ST = OpamStateTypes
 open Utils
-open State
 module File = OpamFilename
 module Dir = OpamFilename.Dir
 module PkgSet = OpamPackage.Set
@@ -151,11 +150,6 @@ let switch_universe () =
   OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
   universe ~sw
 
-let validate_workdir working_dir =
-  let workdir = Dir.of_string working_dir in
-  mkdir workdir;
-  Some workdir
-
 let validate_compiler_variant s =
   let open OpamPackage in
   match of_string_opt s with
@@ -189,15 +183,15 @@ let get_repo_timestamp (repo_url: OpamUrl.t) =
        one commit in the repo. *)
     assert false
 
-let create_new_switch gt ~switch_name ~compiler =
-  log "Creating a new switch %s..." (OpamSwitch.to_string switch_name);
+let create_new_switch gt ~switch ~compiler =
+  log "Creating a new switch %s..." (OpamSwitch.to_string switch);
   let ((), sw) =
     OpamRepositoryState.with_ `Lock_none gt @@ begin fun rt ->
       (* setup a new switch with [compiler_variant] as compiler *)
       OpamSwitchCommand.create gt ~rt
         ~update_config:true
         ~invariant:(OpamFormula.of_conjunction [compiler.name, Some (`Eq, compiler.version)])
-        switch_name
+        switch
         (fun sw -> (), OpamSwitchCommand.install_compiler sw)
     end in
   log "New switch successfully created";
@@ -205,12 +199,12 @@ let create_new_switch gt ~switch_name ~compiler =
      updated! (to contain the newly created switch) *)
   sw, sw.switch_global
 
-let remove_switch gt ~switch_name =
-  OpamSwitchCommand.remove gt ~confirm:false switch_name
+let remove_switch gt ~switch =
+  OpamSwitchCommand.remove gt ~confirm:false switch
 
-let recreate_switch gt ~switch_name ~compiler =
-  let gt = remove_switch gt ~switch_name in
-  let sw, gt = create_new_switch gt ~switch_name ~compiler in
+let recreate_switch gt ~switch ~compiler =
+  let gt = remove_switch gt ~switch in
+  let sw, gt = create_new_switch gt ~switch ~compiler in
   OpamSwitchState.unlock sw, gt
 
 let build_log_of_exn exn =
@@ -236,9 +230,10 @@ let build_log_of_exn exn =
 let process_package_result
     (action : package action)
     (action_result : (PkgSet.t * PkgSet.t, OpamSolver.Action.Set.t) action_result)
-  : Cover_state.report_item option
+  : Data.Package_report.t option
   =
-  let error exn cause = Error { log = build_log_of_exn exn; cause } in
+  let module R = Data.Package_report in
+  let error exn cause = R.Error { log = build_log_of_exn exn; cause } in
   match action with
   | (`Change _ | `Reinstall _ | `Remove _) ->
     assert false
@@ -253,7 +248,7 @@ let process_package_result
     *)
     let report = match action_result with
       | `Aborted deps ->
-        Some (Aborted { deps })
+        Some (R.Aborted { deps })
       | `Successful _ ->
         None
       | `Exception exn ->
@@ -266,26 +261,25 @@ let process_package_result
   | `Install package ->
     let report = match action_result with
       | `Aborted deps ->
-        Aborted { deps }
+        R.Aborted { deps }
       | `Exception exn ->
         error exn `Install
       | `Successful (installed, _removed) ->
         let changes = (* FIXME *)
-          ignore installed; Changes in
+          ignore installed; R.Changes in
         let log = (* FIXME *)
           ["TODO"] in
         Success { log; changes }
     in Some (package, report)
 
-let retire_cover_state
-    ~(switch_state : Switch_state.t)
-    cover_state
+let retire_cover_state ~st ~switch
   =
-  let repo_path = switch_state.cover_state_repo.path in
-  let past_timestamps = switch_state.past_timestamps in
-  let timestamp_s = cover_state.Cover_state.timestamp.data in
+  let workdir = State.get_workdir st in
+  let repo_path = State.(d ~workdir @@ cover_state_path ~switch) in
+  let past_timestamps = State.(d ~workdir (past_timestamps_path ~switch)) in
+  let timestamp_value = State.(read st (timestamp_path ~switch)) in
   let cur_basename = File.Base.to_string (File.basename_dir repo_path) in
-  mv repo_path File.Op.(past_timestamps / (cur_basename ^ "_" ^ timestamp_s))
+  mv repo_path File.Op.(past_timestamps / (cur_basename ^ "_" ^ timestamp_value))
 
 (* Recover or initialize an opam_root with an up-to-date repository *)
 let recover_opam_root ~workdir ~repo_url opamroot =
@@ -341,12 +335,12 @@ let recover_opam_root ~workdir ~repo_url opamroot =
     end;
     log "Done updating the repository."
 
-let recover_opam_switch ~compiler ~compiler_variant ~switch_name =
+let recover_opam_switch ~compiler ~compiler_variant ~switch =
   OpamGlobalState.with_ `Lock_write @@ fun gt ->
   let _gt =
-    if not (OpamGlobalState.switch_exists gt switch_name) then begin
+    if not (OpamGlobalState.switch_exists gt switch) then begin
       log "Creating new opam switch %s" compiler_variant;
-      let sw, gt = create_new_switch gt ~switch_name ~compiler in
+      let sw, gt = create_new_switch gt ~switch ~compiler in
       OpamSwitchState.drop sw;
       gt
     end else begin
@@ -355,7 +349,7 @@ let recover_opam_switch ~compiler ~compiler_variant ~switch_name =
          (just our repository)
          (this is a sanity check; it is very most likely the case) *)
       begin
-        OpamSwitchState.with_ `Lock_none gt ~switch:switch_name @@ fun sw ->
+        OpamSwitchState.with_ `Lock_none gt ~switch:switch @@ fun sw ->
         let global_repos = OpamGlobalState.repos_list gt in
         let sw_repos = OpamSwitchState.repos_list sw in
         let sw_repos = if sw_repos = [] then (
@@ -372,7 +366,7 @@ let recover_opam_switch ~compiler ~compiler_variant ~switch_name =
       (* TODO update/refine/fix this criterion, esp with switch invariants in
          mind? *)
       let sw_base_installed =
-        OpamSwitchState.with_ `Lock_none gt ~switch:switch_name
+        OpamSwitchState.with_ `Lock_none gt ~switch
           (fun sw ->
              PkgSet.inter
                sw.compiler_packages sw.installed) in
@@ -380,11 +374,11 @@ let recover_opam_switch ~compiler ~compiler_variant ~switch_name =
         log "Either the compiler %s is not installed or not in the \
              base packages of the switch" (OpamPackage.to_string compiler);
         log "Creating a new switch instead";
-        let (sw, gt) = recreate_switch gt ~switch_name ~compiler in
+        let (sw, gt) = recreate_switch gt ~switch ~compiler in
         OpamSwitchState.drop sw;
         gt
       end else begin
-        begin OpamSwitchState.with_ `Lock_none gt ~switch:switch_name @@ fun sw ->
+        begin OpamSwitchState.with_ `Lock_none gt ~switch @@ fun sw ->
           let _sw = OpamSwitchAction.set_current_switch gt sw in ()
         end;
         OpamGlobalState.unlock gt
@@ -395,7 +389,7 @@ let recover_opam_switch ~compiler ~compiler_variant ~switch_name =
 
 (* Are the packages currently installed in the opam switch compatible with
    the current cover element? *)
-let recover_opam_switch_for_plan ~switch_name ~universe ~compiler plan =
+let recover_opam_switch_for_plan ~switch ~universe ~compiler plan =
     OpamGlobalState.with_ `Lock_none @@ fun gt ->
     OpamSwitchState.with_ `Lock_read gt @@ fun sw ->
     let elt_installs = Cover_elt_plan.installs plan in
@@ -414,13 +408,13 @@ let recover_opam_switch_for_plan ~switch_name ~universe ~compiler plan =
       log "Re-creating a fresh opam switch...";
       let _sw, _gt =
         OpamGlobalState.with_write_lock gt @@ fun gt ->
-        recreate_switch gt ~switch_name ~compiler in
+        recreate_switch gt ~switch ~compiler in
       ()
     end
 
 (* Archive the current cover element if necessary *)
-let recover_cover_state ~(selection : PkgSet.t) (cover_state : Cover_state.t) =
-  let already_built = Cover_state.resolved_packages cover_state in
+let recover_cover_state ~(selection : PkgSet.t) ~st ~switch : bool (* has_changed *) =
+  let already_built = State.resolved_packages st ~switch in
   let selection_already_built =
     PkgSet.inter already_built selection in
   let selection_remaining =
@@ -431,10 +425,8 @@ let recover_cover_state ~(selection : PkgSet.t) (cover_state : Cover_state.t) =
     (PkgSet.cardinal selection_already_built)
     (PkgSet.cardinal selection_remaining);
 
-  let has_changed = false in
-
-  match cover_state.cur_plan.data with
-  | None -> cover_state, has_changed
+  match State.(read st @@ cur_plan_path ~switch) with
+  | None -> false
   | Some plan ->
     (* A cover element was already being built.
 
@@ -442,78 +434,71 @@ let recover_cover_state ~(selection : PkgSet.t) (cover_state : Cover_state.t) =
        in useless work: the packages remaining to build
        are all part of the user selection.
     *)
-    let current_todo =
-      Cover_state.nonbuilt_useful_packages plan
-        (SerializedLog.items cover_state.cur_report) in
+    let current_todo = State.nonbuilt_useful_packages st ~switch plan in
     if PkgSet.subset current_todo selection
     then begin
       log "Reusing the current cover element";
-      cover_state, has_changed
+      false
     end else begin
       log "Archiving the current cover element";
       (* NB: here we archive the current element even though it has only
          been built partially (that's fine as long as we remember to
          consider cover elements only as the output of the solver for
          co-installable packages, not as the build log). *)
-      let _cover_elt, cover_state = Cover_state.archive_cur_elt cover_state in
-      cover_state, true
+      let _elt = State.archive_cur_elt st ~switch in
+      true
     end
 
 let recover_switch_state
     ~(repo_url: OpamUrl.t)
     ~(selection: PkgSet.t)
-    (switch_state: Switch_state.t)
+    ~st ~switch
   =
   let repo_timestamp = get_repo_timestamp repo_url in
-  let cover_state_repo =
-    match switch_state.cover_state_repo.head with
-    | Some cover_state when repo_timestamp = cover_state.timestamp.data ->
-      log "Found an existing cover state for the current timestamp";
-      let cover_state, has_changed =
-        recover_cover_state ~selection cover_state in
-      if not has_changed then
-        (* Avoid polluting the git history with identity commits *)
-        switch_state.cover_state_repo
-      else
-        Repo.commit_new_head ~sync:Cover_state.sync "Update cover state"
-          { switch_state.cover_state_repo with head = Some cover_state }
-    | _ ->
-      (* Start over with a fresh cover state for the current timestamp *)
-      begin match switch_state.cover_state_repo.head with
-        | None -> ()
-        | Some cover_state ->
-          log "Existing cover state is for an old repo timestamp";
-          (* There is an existing cover_state, but its timestamp does not match
-             the one of the repository. Retire the cover_state
-             before creating a new one *)
-          retire_cover_state ~switch_state cover_state;
-      end;
+  if State.(exists st @@ cover_state_path ~switch)
+  && State.(read st @@ timestamp_path ~switch) = repo_timestamp
+  then begin
+    log "Found an existing cover state for the current timestamp";
+    let has_changed =
+      recover_cover_state ~selection ~st ~switch in
+    if not has_changed then
+      (* Avoid polluting the git history with identity commits *)
+      ()
+    else
+      State.(commit st (cover_state_path ~switch) ~msg:"Update cover state")
+  end else begin
+    if State.(exists st @@ cover_state_path ~switch) then begin
+      (* There is an existing cover_state, but its timestamp does not match
+         the one of the repository. Retire the cover_state and recreate it. *)
+      log "Existing cover state is for an old repo timestamp.";
+      log "Create a fresh cover state for the current timestamp.";
+      State.recreate st (State.cover_state_path ~switch)
+        ~finalize:(fun () -> retire_cover_state ~st ~switch)
+        ~init:(fun () ->
+        (* Initialize the directory. We need to provide the timestamp
+           explicitly; the other files will be generated automatically from
+           their default value following the schema. *)
+          State.(write st @@ timestamp_path ~switch) repo_timestamp)
+    end else begin
+      (* Create a fresh cover_state repository *)
       log "Initialize a fresh cover state";
-      (* This initializes a fresh cover_state repository; it contains
-         no data at this point (i.e. [cover_state_repo.head = None]) *)
-      let cover_state_repo =
-        Repo.load_and_clean
-          ~path:switch_state.cover_state_repo.path
-          ~load:(fun ~dir:_ -> assert false (* there is no data to load *)) in
-      (* Add some data to the directory (the initial cover state for our
-         packages selection). *)
-      let cover_state = Cover_state.create
-          ~dir:switch_state.cover_state_repo.path
-          ~timestamp:repo_timestamp in
-      Repo.commit_new_head ~sync:Cover_state.sync "Initial cover state"
-        { cover_state_repo with head = Some cover_state }
-  in
-  { switch_state with cover_state_repo }
-
+      State.mkdir st (State.cover_state_path ~switch) ~init:(fun () ->
+        (* other files will be generated automatically from default values *)
+        State.(write st @@ timestamp_path ~switch) repo_timestamp)
+    end;
+    State.(commit st ~msg:"Initial cover state" @@ cover_state_path ~switch)
+  end
 
 let build
-    ~(switch_name : switch)
+    ~(st : State.t)
+    ~(switch : switch)
     ~(compiler : package)
     ~(universe : universe)
     ~(universe_cycles : PkgSet.t list list)
     ~(to_install: PkgSet.t)
-    (initial_timestamp : Cover_state.t Repo.t)
   =
+  let switch_o = switch in
+  let switch = OpamSwitch.to_string switch_o in
   (* Build loop:
      - compute the next element of the cover (if needed);
      - build all packages of this element;
@@ -533,88 +518,68 @@ let build
   let rec start_build
       ~(universe : universe)
       ~(to_install: PkgSet.t)
-      (cover_state_repo : Cover_state.t Repo.t)
     =
-    let cover_state = CCOption.get_exn_or "?" cover_state_repo.head in
-    match cover_state.cur_plan.data with
+    match State.(read st @@ cur_plan_path ~switch) with
     | None ->
-       build_next_cover_element ~universe ~to_install cover_state_repo cover_state
+       build_next_cover_element ~universe ~to_install
     | Some cover_elt ->
-       build_cover_element ~universe ~to_install cover_state_repo cover_state cover_elt
+       build_cover_element ~universe ~to_install cover_elt
 
-  and finish_build (cover_state_repo : Cover_state.t Repo.t) (cover_state : Cover_state.t) =
+  and finish_build () =
+    let uninst = State.(read st @@ uninst_path ~switch) in
     log "Finished building all packages of the selection \
          (%d uninstallable packages)"
-      (PkgSet.cardinal cover_state.uninst.data);
-    cover_state_repo
+      (PkgSet.cardinal uninst);
+    ()
 
   and build_next_cover_element
     ~(universe : universe)
     ~(to_install: PkgSet.t)
-    (cover_state_repo : Cover_state.t Repo.t)
-    (cover_state : Cover_state.t)
   =
     if PkgSet.is_empty to_install then
-      finish_build cover_state_repo cover_state
+      finish_build ()
     else begin
       log "Computing the next element...";
       let elt, remaining =
         Cover_elt_plan.compute
           ~make_request:(Lib.make_request_maxsat ~cycles:universe_cycles)
           ~universe ~to_install in
-      let commit_cover_state msg cover_state =
-        Repo.commit_new_head ~sync:Cover_state.sync msg
-          { cover_state_repo with head = Some cover_state } in
       if PkgSet.is_empty elt.useful then begin
         assert (PkgSet.equal to_install remaining);
-        let cover_state =
-          { cover_state with
-            uninst = { cover_state.uninst with data = remaining };
-          } in
-        let cover_state_repo =
-          commit_cover_state "No new element; build loop done" cover_state in
-        finish_build cover_state_repo cover_state
+        State.(write st @@ uninst_path ~switch) remaining;
+        State.(commit ~msg:"No new element; build loop done" st @@ cover_state_path ~switch);
+        finish_build ()
       end else begin
-        let cover_state =
-          { cover_state with
-            cur_plan = { cover_state.cur_plan with data = Some elt };
-          } in
-        let cover_state_repo =
-          commit_cover_state "New element computed" cover_state in
-        build_cover_element ~universe ~to_install cover_state_repo cover_state elt
+        State.(write st @@ cur_plan_path ~switch) (Some elt);
+        State.(commit ~msg:"New element computed" st @@ cover_state_path ~switch);
+        build_cover_element ~universe ~to_install elt
       end
     end
 
   and build_cover_element
     ~(universe : universe)
     ~(to_install: PkgSet.t)
-    (cover_state_repo : Cover_state.t Repo.t)
-    (cover_state : Cover_state.t)
     (plan : Cover_elt_plan.t)
     =
     (* Note: we recover after a program restart,
        but also when starting a new cover element. *)
-    recover_opam_switch_for_plan ~switch_name ~universe ~compiler plan;
+    recover_opam_switch_for_plan ~switch:switch_o ~universe ~compiler plan;
 
     (* The cover element can now be built in the current opam switch *)
-    let cover_state = ref cover_state in
     let update_cover_state package_action action_result =
       match process_package_result package_action action_result with
       | None -> ()
       | Some report_item ->
-        cover_state := Cover_state.add_item_to_report report_item !cover_state;
-        let repo =
-          Repo.commit_new_head ~sync:Cover_state.sync
-            (Printf.sprintf "New report for package %s"
-               (OpamPackage.to_string (fst report_item)))
-            { cover_state_repo with head = Some !cover_state } in
-        cover_state := CCOption.get_exn_or "?" repo.head
+        State.(append st @@ cur_report_path ~switch) report_item;
+        let msg = Printf.sprintf "New report for package %s"
+            (OpamPackage.to_string (fst report_item)) in
+        State.(commit st ~msg @@ cover_state_path ~switch);
     in
 
-    let cover_state =
+    begin
       OpamGlobalState.with_ `Lock_none @@ fun gs ->
       OpamSwitchState.with_ `Lock_write gs @@ fun sw ->
-      let (sw, res) =
+      let (_sw, res) =
         OpamSolution.apply sw
           ~ask:false
           ~requested:OpamPackage.Name.Set.empty
@@ -623,17 +588,12 @@ let build
           plan.Cover_elt_plan.solution
       in
       ignore res; (* we updated the cover state report incrementally *)
-      OpamSwitchState.drop sw;
-      !cover_state
-    in
+    end;
 
     (* Update the cover state *)
-    let cover_elt, cover_state = Cover_state.archive_cur_elt cover_state in
-
-    let cover_state_repo =
-      Repo.commit_new_head ~sync:Cover_state.sync
-        "Built the current cover element"
-        { cover_state_repo with head = Some cover_state } in
+    let cover_elt = State.archive_cur_elt st ~switch in
+    let cover_elt = CCOption.get_exn_or "?" cover_elt in
+    State.(commit st ~msg:"Built the current cover element" @@ cover_state_path ~switch);
     log "Finished building the current cover element";
 
     let universe, to_install =
@@ -641,7 +601,7 @@ let build
         let (_plan, report) = cover_elt in
         PkgMap.fold (fun package result (suc, err) ->
           match result with
-          | Success _ -> (PkgSet.add package suc, err)
+          | Data.Package_report.Success _ -> (PkgSet.add package suc, err)
           | Error _ -> (suc, PkgSet.add package err)
           | Aborted _ -> (suc, err)
         ) report (PkgSet.empty, PkgSet.empty)
@@ -649,15 +609,27 @@ let build
       remove_from_universe universe errors,
       PkgSet.Op.(to_install -- successes -- errors)
     in
-    build_next_cover_element ~universe ~to_install cover_state_repo cover_state
+    build_next_cover_element ~universe ~to_install
 
   in
-  start_build ~universe ~to_install initial_timestamp
+  start_build ~universe ~to_install
 
 let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
-  let workdir = get_or_fatal (validate_workdir working_dir)
-      "%s is not empty but does not contain an %s"
-      working_dir opamroot_path in
+  (* resolve workdir as an absolute path *)
+  let workdir =
+    if Filename.is_relative working_dir then
+      Filename.concat (Sys.getcwd ()) working_dir
+    else
+      working_dir
+  in
+
+  (* create [working_dir] if it does not exist *)
+  mkdir (Dir.of_string working_dir);
+
+  (* Create a state handle for the workdir, checking that it conforms to the
+     expected schema, creating directories/files with default values if needed
+     *)
+  let st = State.load ~workdir in
 
   let compiler = get_or_fatal (validate_compiler_variant compiler_variant)
       "Invalid compiler variant: %s%t" compiler_variant
@@ -676,7 +648,7 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
       "Repo url must be a local git clone of an opam-repository" in
 
   let opamroot =
-    let root_dir = OpamFilename.Op.(workdir / opamroot_path) in
+    let root_dir = State.(d ~workdir opamroot_path) in
     OpamStateConfig.opamroot ~root_dir ()
   in
 
@@ -691,46 +663,42 @@ let run_cmd ~repo_url ~working_dir ~compiler_variant ~package_selection =
   recover_opam_root ~workdir ~repo_url opamroot;
   (* We now have an initialized opamroot with an updated repository *)
 
-  let switch_name = OpamSwitch.of_string compiler_variant in
-  recover_opam_switch ~compiler ~compiler_variant ~switch_name;
+  let switch_o = OpamSwitch.of_string compiler_variant in
+  let switch = compiler_variant in
+  recover_opam_switch ~compiler ~compiler_variant ~switch:switch_o;
 
-  OpamStateConfig.update ~current_switch:switch_name ();
-  log "Using opam switch %s" (OpamSwitch.to_string switch_name);
+  OpamStateConfig.update ~current_switch:switch_o ();
+  log "Using opam switch %s" switch;
 
   (* We have a switch of the right name, attached to the right repository.
      Installed packages in the switch include at least our compiler and
      related base packages (there can also be other packages). *)
 
-  let work_state =
-    let view = Work_state.View_single.load_or_create compiler in
-    Work_state.load_or_create ~view ~workdir in
-  let switch_state = work_state.view in
   (* TODO: do we want to filter the universe to exclude packages that we know
      are broken? *)
   let universe = switch_universe () |> prepare_universe in
-  log "Computing cycles in the packages universe...";
-  let universe_cycles = Lib.compute_universe_cycles universe in
-  log "Done";
+  let universe_cycles =
+      log "Computing cycles in the packages universe...";
+      let universe_cycles = Lib.compute_universe_cycles universe in
+      log "Done";
+      universe_cycles
+    )
+  in
 
   let selection_packages = compute_package_selection universe package_selection in
   log "User package selection includes %d packages"
     (PkgSet.cardinal selection_packages);
 
-  let switch_state : Switch_state.t =
-    recover_switch_state ~repo_url ~selection:selection_packages switch_state in
+  recover_switch_state ~st ~repo_url ~selection:selection_packages ~switch;
 
   let universe, to_install =
-    match switch_state.cover_state_repo.head with
-      | None -> universe, selection_packages
-      | Some cover_state ->
-         remove_from_universe universe (Cover_state.broken_packages cover_state),
-         PkgSet.diff selection_packages (Cover_state.resolved_packages cover_state)
+    let broken = State.broken_packages st ~switch in
+    let resolved = State.resolved_packages st ~switch in
+    remove_from_universe universe broken,
+    PkgSet.diff selection_packages resolved
   in
 
-  let _cover_state_repo : Cover_state.t Repo.t =
-    build ~switch_name ~compiler ~universe ~universe_cycles ~to_install
-      switch_state.cover_state_repo
-  in
+  build ~st ~switch:switch_o ~compiler ~universe ~universe_cycles ~to_install;
   log "Done";
   ()
 
