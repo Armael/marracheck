@@ -368,16 +368,15 @@ module Make (Fs : Spec) = struct
     fun db (path, desc) v ->
     let tree = subtree path Fs.schema in
     let filename = string_of_path db.root path in
-    begin match tree, desc with
+    match tree, desc with
     | File { format; write; _ }, FilePath pformat ->
-      write ~filename (cast_data pformat format v)
+      write ~filename (cast_data pformat format v);
+      db.cache <- FsCache.add (path, desc) (File__ v) db.cache
     | AppendFile { format; write_all; _ }, AppendFilePath pformat ->
-      write_all ~filename (cast_data_list pformat format v)
+      write_all ~filename (cast_data_list pformat format v);
+      db.cache <- FsCache.add (path, desc) (File__ v) db.cache
     | _ ->
       raise (Illegal_path path)
-    end;
-    (* remove the outdated cache entry, if any *)
-    db.cache <- FsCache.remove (path, desc) db.cache
 
   let append : type a b. t -> (a, b append) file path -> b -> unit =
     fun db (path, desc) v ->
@@ -390,7 +389,7 @@ module Make (Fs : Spec) = struct
     | _ ->
       raise (Illegal_path path)
     end;
-    (* invalidate any outdated cache entry *)
+    (* do not attempt to cache appends; invalidate any outdated cache entry *)
     db.cache <- FsCache.remove (path, desc) db.cache
 
   let commit db ?(msg = "-") (path, _) =
